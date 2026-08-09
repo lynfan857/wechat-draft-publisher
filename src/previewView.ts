@@ -82,6 +82,7 @@ export class WeChatPreviewView extends ItemView {
   private publishResult: { level: 'ok' | 'error'; message: string; detail?: string } | null = null;
   private lastHtmlAudit: HtmlAuditState | null = null;
   private publishLog: PublishLogEntry[] = [];
+  private settingsDrawerOpen = false;
   private articleEl: HTMLElement | null = null;
   private checksEl: HTMLElement | null = null;
   private renderComponent: Component | null = null;
@@ -193,10 +194,10 @@ export class WeChatPreviewView extends ItemView {
     }
 
     this.renderToolbar(contentEl);
-    this.renderMetadataEditor(contentEl);
-    this.renderPublishResult(contentEl);
-    this.renderPublishChecks(contentEl);
-    this.renderPreview(contentEl);
+    const workbench = contentEl.createDiv({ cls: `wechat-draft-workbench${this.settingsDrawerOpen ? ' is-drawer-open' : ''}` });
+    const preview = workbench.createDiv({ cls: 'wechat-draft-preview-panel' });
+    this.renderPreview(preview);
+    this.renderSettingsDrawer(workbench);
   }
 
   private renderHeader(parent: HTMLElement): void {
@@ -249,6 +250,12 @@ export class WeChatPreviewView extends ItemView {
       this.render();
     };
 
+    const settings = toolbar.createEl('button', { text: this.settingsDrawerOpen ? '收起设置' : '发布设置', attr: { type: 'button' } });
+    settings.onclick = () => {
+      this.settingsDrawerOpen = !this.settingsDrawerOpen;
+      this.render();
+    };
+
     const status = this.workbenchStatus();
     const state = toolbar.createDiv({ cls: `wechat-draft-state is-${status.level}` });
     const icon = state.createSpan();
@@ -256,10 +263,35 @@ export class WeChatPreviewView extends ItemView {
     state.createSpan({ text: status.label });
   }
 
+  private renderSettingsDrawer(parent: HTMLElement): void {
+    if (!this.settingsDrawerOpen) return;
+    const scrim = parent.createDiv({ cls: 'wechat-draft-drawer-scrim' });
+    scrim.onclick = () => {
+      this.settingsDrawerOpen = false;
+      this.render();
+    };
+
+    const drawer = parent.createDiv({ cls: 'wechat-draft-settings-drawer' });
+    const head = drawer.createDiv({ cls: 'wechat-draft-settings-drawer-head' });
+    const title = head.createDiv();
+    title.createEl('h3', { text: '发布设置' });
+    title.createSpan({ text: '调整标题、封面、检查项和诊断信息。' });
+    const close = head.createEl('button', { text: '收起', attr: { type: 'button' } });
+    close.onclick = () => {
+      this.settingsDrawerOpen = false;
+      this.render();
+    };
+
+    const body = drawer.createDiv({ cls: 'wechat-draft-settings-drawer-body' });
+    this.renderMetadataEditor(body);
+    this.renderPublishResult(body);
+    this.renderPublishChecks(body);
+  }
+
   private renderMetadataEditor(parent: HTMLElement): void {
     const section = parent.createDiv({ cls: 'wechat-draft-publish-settings' });
     const head = section.createDiv({ cls: 'wechat-draft-section-head' });
-    head.createEl('h3', { text: '发布设置' });
+    head.createEl('h3', { text: '基础信息' });
     const save = head.createEl('button', { text: '保存到笔记属性', attr: { type: 'button' } });
     save.disabled = Boolean(this.operation);
     save.onclick = () => void this.savePublishMetadata();
