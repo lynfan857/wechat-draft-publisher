@@ -252,6 +252,7 @@ export function metadataFromFrontmatter(
     author: valueFromFrontmatter(frontmatter, 'author', '作者'),
     digest: valueFromFrontmatter(frontmatter, 'digest', '摘要'),
     cover: valueFromFrontmatter(frontmatter, 'cover', '封面'),
+    coverMediaId: valueFromFrontmatter(frontmatter, 'cover_media_id', '封面素材ID'),
     contentSourceUrl: valueFromFrontmatter(frontmatter, 'content_source_url', '原文地址'),
   };
 }
@@ -276,6 +277,7 @@ export async function buildSnapshot(
     author: metadata.author || settings.defaultAuthor,
     digest: metadata.digest || firstParagraph(markdown),
     cover: metadata.cover,
+    coverMediaId: metadata.coverMediaId,
     contentSourceUrl: metadata.contentSourceUrl,
     markdown,
     assets,
@@ -290,7 +292,7 @@ export async function buildSnapshot(
 
 export function applySnapshotMetadata(
   snapshot: WeChatSnapshot,
-  values: Pick<WeChatSnapshot, 'title' | 'author' | 'digest' | 'cover' | 'contentSourceUrl'>,
+  values: Pick<WeChatSnapshot, 'title' | 'author' | 'digest' | 'cover' | 'coverMediaId' | 'contentSourceUrl'>,
 ): WeChatSnapshot {
   const prepared: Omit<WeChatSnapshot, 'contentHash'> = {
     ...snapshot,
@@ -298,6 +300,7 @@ export function applySnapshotMetadata(
     author: values.author.trim(),
     digest: values.digest.trim(),
     cover: values.cover.trim(),
+    coverMediaId: values.coverMediaId.trim(),
     contentSourceUrl: values.contentSourceUrl.trim(),
   };
   return {

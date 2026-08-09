@@ -12,6 +12,7 @@ export interface NotePublishMetadata {
   author: string;
   digest: string;
   cover: string;
+  coverMediaId: string;
   contentSourceUrl: string;
 }
 
@@ -21,6 +22,7 @@ export interface WeChatSnapshot {
   author: string;
   digest: string;
   cover: string;
+  coverMediaId: string;
   contentSourceUrl: string;
   markdown: string;
   contentHash: string;

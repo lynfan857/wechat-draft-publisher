@@ -68,6 +68,7 @@ title: 文章标题
 author: 作者名
 digest: 分享摘要
 cover: path/to/cover.png
+cover_media_id: existing_wechat_cover_media_id
 content_source_url: https://example.com
 ```
 

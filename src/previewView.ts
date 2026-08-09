@@ -22,6 +22,7 @@ import type {
 import type { WeChatApiClient } from './wechatApi';
 
 export const WECHAT_DRAFT_VIEW_TYPE = 'wechat-draft-publisher-preview';
+type CoverMode = 'first-image' | 'image' | 'media-id';
 
 export interface PreviewViewDeps {
   getSettings: () => WeChatDraftPublisherSettings;
@@ -38,6 +39,8 @@ export class WeChatPreviewView extends ItemView {
   private authorValue = '';
   private digestValue = '';
   private coverValue = '';
+  private coverMediaIdValue = '';
+  private coverMode: CoverMode = 'first-image';
   private contentSourceUrlValue = '';
   private themeId = '';
   private loading = false;
@@ -111,6 +114,8 @@ export class WeChatPreviewView extends ItemView {
       this.authorValue = snapshot.author;
       this.digestValue = snapshot.digest;
       this.coverValue = snapshot.cover;
+      this.coverMediaIdValue = snapshot.coverMediaId;
+      this.coverMode = snapshot.coverMediaId ? 'media-id' : snapshot.cover ? 'image' : 'first-image';
       this.contentSourceUrlValue = snapshot.contentSourceUrl;
     } catch (error) {
       this.error = error instanceof Error ? error.message : '公众号预览生成失败。';
@@ -126,7 +131,8 @@ export class WeChatPreviewView extends ItemView {
       title: this.titleValue,
       author: this.authorValue,
       digest: this.digestValue,
-      cover: this.coverValue,
+      cover: this.coverMode === 'image' ? this.coverValue : '',
+      coverMediaId: this.coverMode === 'media-id' ? this.coverMediaIdValue : '',
       contentSourceUrl: this.contentSourceUrlValue,
     });
   }
@@ -226,12 +232,92 @@ export class WeChatPreviewView extends ItemView {
       this.digestValue = value;
       void this.updatePreviewOnly();
     });
-    this.renderInput(meta, '封面', this.coverValue, (value) => {
-      this.coverValue = value;
-    });
     this.renderInput(meta, '原文链接', this.contentSourceUrlValue, (value) => {
       this.contentSourceUrlValue = value;
     });
+    this.renderCoverPicker(parent);
+  }
+
+  private renderCoverPicker(parent: HTMLElement): void {
+    const snapshot = this.snapshot;
+    if (!snapshot) return;
+    const section = parent.createDiv({ cls: 'wechat-draft-cover' });
+    const head = section.createDiv({ cls: 'wechat-draft-cover-head' });
+    head.createEl('h4', { text: '封面' });
+    head.createSpan({ text: this.coverSummary(snapshot) });
+
+    const modes = section.createDiv({ cls: 'wechat-draft-cover-modes' });
+    this.renderCoverMode(modes, 'first-image', '使用正文第一张图', '适合大多数文章，发布时会上传为微信永久素材。');
+    this.renderCoverMode(modes, 'image', '使用指定图片', '从当前笔记检测到的图片里选择一张。');
+    this.renderCoverMode(modes, 'media-id', '使用已有微信素材 media_id', '适合已经在公众号后台上传过封面的情况。');
+
+    if (this.coverMode === 'image') {
+      const grid = section.createDiv({ cls: 'wechat-draft-cover-grid' });
+      if (snapshot.assets.length === 0) {
+        grid.createDiv({ cls: 'wechat-draft-cover-empty', text: '当前笔记还没有检测到图片。' });
+      }
+      for (const asset of snapshot.assets) {
+        const item = grid.createEl('button', {
+          cls: `wechat-draft-cover-card${asset.originalUrl === this.coverValue ? ' is-selected' : ''}`,
+          attr: { type: 'button' },
+        });
+        item.disabled = Boolean(this.operation);
+        item.onclick = () => {
+          this.coverMode = 'image';
+          this.coverValue = asset.originalUrl;
+          this.render();
+        };
+        item.createEl('img', { attr: { src: asset.previewUrl, alt: asset.fileName } });
+        const copy = item.createDiv();
+        copy.createEl('strong', { text: asset.fileName });
+        copy.createSpan({ text: `${formatBytes(asset.byteLength)} · ${asset.mimeType}` });
+      }
+    }
+
+    if (this.coverMode === 'media-id') {
+      this.renderInput(section, '微信素材 media_id', this.coverMediaIdValue, (value) => {
+        this.coverMediaIdValue = value.trim();
+      });
+    }
+  }
+
+  private renderCoverMode(
+    parent: HTMLElement,
+    value: CoverMode,
+    title: string,
+    detail: string,
+  ): void {
+    const row = parent.createEl('label', { cls: `wechat-draft-cover-mode${this.coverMode === value ? ' is-selected' : ''}` });
+    const input = row.createEl('input', { attr: { type: 'radio', name: 'wechat-cover-mode', value } });
+    input.checked = this.coverMode === value;
+    input.disabled = Boolean(this.operation);
+    input.onchange = () => {
+      this.coverMode = value;
+      if (value === 'first-image') {
+        this.coverValue = '';
+        this.coverMediaIdValue = '';
+      } else if (value === 'image') {
+        this.coverMediaIdValue = '';
+        this.coverValue = this.coverValue || this.snapshot?.assets[0]?.originalUrl || '';
+      } else {
+        this.coverValue = '';
+      }
+      this.render();
+    };
+    const copy = row.createDiv();
+    copy.createEl('strong', { text: title });
+    copy.createSpan({ text: detail });
+  }
+
+  private coverSummary(snapshot: WeChatSnapshot): string {
+    const coverAsset = this.chooseCoverAsset(snapshot);
+    if (this.coverMode === 'media-id') {
+      return this.coverMediaIdValue.trim() ? '将使用已有微信素材' : '需要填写 media_id';
+    }
+    if (this.coverMode === 'image') {
+      return coverAsset ? `将使用 ${coverAsset.fileName}` : '需要选择一张图片';
+    }
+    return snapshot.assets[0] ? `将使用正文第一张图：${snapshot.assets[0].fileName}` : '正文没有图片，将尝试使用默认封面素材 ID';
   }
 
   private renderPublishChecks(parent: HTMLElement): void {
@@ -270,6 +356,7 @@ export class WeChatPreviewView extends ItemView {
     }> = [];
     const draft = this.currentDraftState();
     const coverAsset = this.chooseCoverAsset(snapshot);
+    const coverMediaId = snapshot.coverMediaId.trim() || this.deps.getSettings().defaultCoverMediaId.trim();
     const publicationHash = this.publicationHash(snapshot);
 
     for (const warning of snapshot.warnings) {
@@ -288,9 +375,17 @@ export class WeChatPreviewView extends ItemView {
       ? { level: snapshot.digest.length > 120 ? 'warn' : 'ok', title: '摘要', detail: snapshot.digest.length > 120 ? '摘要超过 120 字，微信可能截断显示。' : snapshot.digest }
       : { level: 'warn', title: '摘要为空', detail: '可以发布，但分享卡片吸引力会变弱。' });
 
-    issues.push(coverAsset || this.deps.getSettings().defaultCoverMediaId.trim()
-      ? { level: 'ok', title: '封面', detail: coverAsset ? `将使用 ${coverAsset.fileName}` : '将使用设置页默认封面素材 ID。' }
-      : { level: 'error', title: '封面缺失', detail: '请设置 cover、插入正文图片，或填写默认封面素材 ID。' });
+    issues.push(coverAsset || coverMediaId
+      ? {
+        level: 'ok',
+        title: '封面',
+        detail: coverAsset
+          ? `将上传并使用 ${coverAsset.fileName}`
+          : snapshot.coverMediaId.trim()
+            ? '将使用当前笔记填写的微信素材 media_id。'
+            : '将使用设置页默认封面素材 ID。',
+      }
+      : { level: 'error', title: '封面缺失', detail: '请选择正文图片作为封面，或填写微信素材 media_id。' });
 
     issues.push(snapshot.assets.length > 0
       ? { level: 'ok', title: '正文图片', detail: `检测到 ${snapshot.assets.length} 张图片，总计 ${formatBytes(snapshot.assets.reduce((sum, asset) => sum + asset.byteLength, 0))}。` }
@@ -411,13 +506,15 @@ export class WeChatPreviewView extends ItemView {
     const title = this.titleValue.trim();
     const author = this.authorValue.trim();
     const digest = this.digestValue.trim();
-    const cover = this.coverValue.trim();
+    const cover = this.coverMode === 'image' ? this.coverValue.trim() : '';
+    const coverMediaId = this.coverMode === 'media-id' ? this.coverMediaIdValue.trim() : '';
     const contentSourceUrl = this.contentSourceUrlValue.trim();
     await this.app.fileManager.processFrontMatter(this.file, (frontmatter) => {
       writeOptionalFrontmatter(frontmatter, 'title', title);
       writeOptionalFrontmatter(frontmatter, 'author', author);
       writeOptionalFrontmatter(frontmatter, 'digest', digest);
       writeOptionalFrontmatter(frontmatter, 'cover', cover);
+      writeOptionalFrontmatter(frontmatter, 'cover_media_id', coverMediaId);
       writeOptionalFrontmatter(frontmatter, 'content_source_url', contentSourceUrl);
     });
     this.publishResult = { level: 'ok', message: '发布设置已保存。' };
@@ -560,6 +657,7 @@ export class WeChatPreviewView extends ItemView {
 
   private async resolveCoverMediaId(snapshot: WeChatSnapshot): Promise<string> {
     const settings = this.deps.getSettings();
+    if (snapshot.coverMediaId.trim()) return snapshot.coverMediaId.trim();
     const coverAsset = this.chooseCoverAsset(snapshot);
     if (!coverAsset) {
       if (settings.defaultCoverMediaId.trim()) return settings.defaultCoverMediaId.trim();
@@ -580,6 +678,7 @@ export class WeChatPreviewView extends ItemView {
   }
 
   private chooseCoverAsset(snapshot: WeChatSnapshot): WeChatAsset | null {
+    if (snapshot.coverMediaId.trim()) return null;
     if (snapshot.coverAssetHash) {
       const cover = snapshot.assets.find((asset) => asset.contentHash === snapshot.coverAssetHash);
       if (cover) return cover;
