@@ -1,0 +1,28 @@
+{
+  "name": "obsidian-wechat-draft-publisher",
+  "version": "0.1.0",
+  "description": "Preview and publish Obsidian notes as WeChat Official Account drafts.",
+  "type": "module",
+  "main": "main.js",
+  "scripts": {
+    "dev": "node esbuild.config.mjs --watch",
+    "build": "tsc --noEmit && node esbuild.config.mjs production",
+    "prepare-release": "node scripts/prepare-release.mjs",
+    "release": "npm run build && npm run prepare-release"
+  },
+  "keywords": [
+    "obsidian",
+    "obsidian-plugin",
+    "wechat",
+    "wechat-official-account"
+  ],
+  "author": "Kobe",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^24.2.0",
+    "builtin-modules": "^5.0.0",
+    "esbuild": "^0.25.8",
+    "obsidian": "^1.8.7",
+    "typescript": "^5.9.2"
+  }
+}

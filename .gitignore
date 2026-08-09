@@ -1,0 +1,6 @@
+node_modules/
+main.js
+_release/
+_preview/
+_inspect/
+.DS_Store

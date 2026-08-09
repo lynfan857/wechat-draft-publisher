@@ -1,0 +1,621 @@
+import {
+  Component,
+  ItemView,
+  Notice,
+  setIcon,
+  TFile,
+  WorkspaceLeaf,
+} from 'obsidian';
+
+import { readWeChatDraftFrontmatter, writeWeChatDraftFrontmatter } from './frontmatter';
+import { renderWeChatArticle, sanitizeWeChatArticle } from './renderer';
+import type { SanitizedHtmlResult } from './renderer';
+import { buildSnapshot, applySnapshotMetadata } from './snapshot';
+import { getTheme, WECHAT_THEMES } from './themes';
+import type {
+  UploadedAssetCache,
+  WeChatAsset,
+  WeChatDraftPublisherSettings,
+  WeChatDraftFrontmatter,
+  WeChatSnapshot,
+} from './types';
+import type { WeChatApiClient } from './wechatApi';
+
+export const WECHAT_DRAFT_VIEW_TYPE = 'wechat-draft-publisher-preview';
+
+export interface PreviewViewDeps {
+  getSettings: () => WeChatDraftPublisherSettings;
+  saveSettings: () => Promise<void>;
+  api: WeChatApiClient;
+  findUploadCache: (kind: UploadedAssetCache['kind'], contentHash: string) => UploadedAssetCache | null;
+  rememberUploadCache: (entry: UploadedAssetCache) => Promise<void>;
+}
+
+export class WeChatPreviewView extends ItemView {
+  private file: TFile | null = null;
+  private snapshot: WeChatSnapshot | null = null;
+  private titleValue = '';
+  private authorValue = '';
+  private digestValue = '';
+  private coverValue = '';
+  private contentSourceUrlValue = '';
+  private themeId = '';
+  private loading = false;
+  private operation: string | null = null;
+  private error: string | null = null;
+  private publishResult: { level: 'ok' | 'error'; message: string; detail?: string } | null = null;
+  private lastHtmlAudit: SanitizedHtmlResult | null = null;
+  private articleEl: HTMLElement | null = null;
+  private renderComponent: Component | null = null;
+
+  constructor(
+    leaf: WorkspaceLeaf,
+    private readonly deps: PreviewViewDeps,
+  ) {
+    super(leaf);
+  }
+
+  override getViewType(): string {
+    return WECHAT_DRAFT_VIEW_TYPE;
+  }
+
+  override getDisplayText(): string {
+    return '公众号预览';
+  }
+
+  override getIcon(): string {
+    return 'newspaper';
+  }
+
+  override async onOpen(): Promise<void> {
+    this.containerEl.addClass('wechat-draft-view');
+    this.themeId = this.deps.getSettings().defaultThemeId;
+    this.registerEvent(this.app.workspace.on('file-open', (file) => {
+      if (file instanceof TFile && file.extension === 'md') {
+        void this.setFile(file);
+      }
+    }));
+    this.registerEvent(this.app.workspace.on('active-leaf-change', () => {
+      const active = this.app.workspace.getActiveFile();
+      if (active instanceof TFile && active.extension === 'md') {
+        void this.setFile(active);
+      }
+    }));
+    await this.setFile(this.app.workspace.getActiveFile());
+  }
+
+  override async onClose(): Promise<void> {
+    this.renderComponent?.unload();
+    this.renderComponent = null;
+  }
+
+  async setFile(file: TFile | null): Promise<void> {
+    if (file && file.extension !== 'md') return;
+    if (this.file?.path === file?.path && this.snapshot) return;
+    this.file = file;
+    await this.reload();
+  }
+
+  async reload(): Promise<void> {
+    this.loading = true;
+    this.error = null;
+    this.render();
+    try {
+      if (!this.file) {
+        this.snapshot = null;
+        return;
+      }
+      const snapshot = await buildSnapshot(this.app, this.file, this.deps.getSettings());
+      this.snapshot = snapshot;
+      this.titleValue = snapshot.title;
+      this.authorValue = snapshot.author;
+      this.digestValue = snapshot.digest;
+      this.coverValue = snapshot.cover;
+      this.contentSourceUrlValue = snapshot.contentSourceUrl;
+    } catch (error) {
+      this.error = error instanceof Error ? error.message : '公众号预览生成失败。';
+    } finally {
+      this.loading = false;
+      this.render();
+    }
+  }
+
+  private preparedSnapshot(): WeChatSnapshot | null {
+    if (!this.snapshot) return null;
+    return applySnapshotMetadata(this.snapshot, {
+      title: this.titleValue,
+      author: this.authorValue,
+      digest: this.digestValue,
+      cover: this.coverValue,
+      contentSourceUrl: this.contentSourceUrlValue,
+    });
+  }
+
+  private render(): void {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.addClass('wechat-draft-view');
+    contentEl.style.setProperty('--wechat-draft-accent', getTheme(this.themeId).color);
+    this.renderHeader(contentEl);
+
+    if (this.loading) {
+      contentEl.createDiv({ cls: 'wechat-draft-empty', text: '正在生成公众号预览...' });
+      return;
+    }
+    if (this.error) {
+      contentEl.createDiv({ cls: 'wechat-draft-error', text: this.error });
+      return;
+    }
+    if (!this.file || !this.snapshot) {
+      contentEl.createDiv({ cls: 'wechat-draft-empty', text: '打开一篇 Markdown 笔记后即可预览公众号排版。' });
+      return;
+    }
+
+    this.renderToolbar(contentEl);
+    this.renderMetadataEditor(contentEl);
+    this.renderPublishResult(contentEl);
+    this.renderPublishChecks(contentEl);
+    this.renderPreview(contentEl);
+  }
+
+  private renderHeader(parent: HTMLElement): void {
+    const header = parent.createDiv({ cls: 'wechat-draft-header' });
+    const brand = header.createDiv({ cls: 'wechat-draft-brand' });
+    brand.createEl('h2', { text: '公众号发布' });
+    brand.createSpan({ text: this.file ? this.file.path : '未选择笔记' });
+  }
+
+  private renderToolbar(parent: HTMLElement): void {
+    const toolbar = parent.createDiv({ cls: 'wechat-draft-toolbar' });
+    const refresh = toolbar.createEl('button', { text: '刷新预览', attr: { type: 'button' } });
+    refresh.disabled = Boolean(this.operation);
+    refresh.onclick = () => void this.reload();
+
+    const publish = toolbar.createEl('button', {
+      cls: 'mod-cta',
+      text: this.currentDraftState() ? '更新草稿' : '发布草稿',
+      attr: { type: 'button' },
+    });
+    publish.disabled = Boolean(this.operation);
+    publish.onclick = () => void this.publish(false);
+
+    const publishNew = toolbar.createEl('button', { text: '另存为新草稿', attr: { type: 'button' } });
+    publishNew.disabled = Boolean(this.operation);
+    publishNew.onclick = () => void this.publish(true);
+
+    const copy = toolbar.createEl('button', { text: '复制', attr: { type: 'button' } });
+    copy.disabled = Boolean(this.operation);
+    copy.onclick = () => void this.copyToClipboard();
+
+    const themeSelect = toolbar.createEl('select', { attr: { 'aria-label': '选择公众号主题' } });
+    for (const theme of WECHAT_THEMES) {
+      const option = themeSelect.createEl('option', { text: `主题 · ${theme.label}`, value: theme.id });
+      option.selected = theme.id === this.themeId;
+    }
+    themeSelect.onchange = async () => {
+      this.themeId = themeSelect.value;
+      this.deps.getSettings().defaultThemeId = this.themeId;
+      await this.deps.saveSettings();
+      this.render();
+    };
+
+    const state = toolbar.createDiv({ cls: `wechat-draft-state${this.operation ? '' : ' is-ready'}` });
+    const icon = state.createSpan();
+    setIcon(icon, this.operation ? 'loader-circle' : 'circle-check');
+    state.createSpan({ text: this.operation ?? this.statusLabel() });
+  }
+
+  private renderMetadataEditor(parent: HTMLElement): void {
+    const section = parent.createDiv({ cls: 'wechat-draft-publish-settings' });
+    const head = section.createDiv({ cls: 'wechat-draft-section-head' });
+    head.createEl('h3', { text: '发布设置' });
+    const save = head.createEl('button', { text: '保存到笔记属性', attr: { type: 'button' } });
+    save.disabled = Boolean(this.operation);
+    save.onclick = () => void this.savePublishMetadata();
+
+    const meta = parent.createDiv({ cls: 'wechat-draft-meta' });
+    this.renderInput(meta, '标题', this.titleValue, (value) => {
+      this.titleValue = value;
+      void this.updatePreviewOnly();
+    });
+    this.renderInput(meta, '作者', this.authorValue, (value) => {
+      this.authorValue = value;
+      void this.updatePreviewOnly();
+    });
+    this.renderInput(meta, '摘要', this.digestValue, (value) => {
+      this.digestValue = value;
+      void this.updatePreviewOnly();
+    });
+    this.renderInput(meta, '封面', this.coverValue, (value) => {
+      this.coverValue = value;
+    });
+    this.renderInput(meta, '原文链接', this.contentSourceUrlValue, (value) => {
+      this.contentSourceUrlValue = value;
+    });
+  }
+
+  private renderPublishChecks(parent: HTMLElement): void {
+    const snapshot = this.preparedSnapshot();
+    if (!snapshot) return;
+    const panel = parent.createDiv({ cls: 'wechat-draft-checks' });
+    const head = panel.createDiv({ cls: 'wechat-draft-checks-head' });
+    head.createEl('h3', { text: '发布检查' });
+    const issues = this.publishIssues(snapshot);
+    head.createSpan({
+      cls: issues.some((issue) => issue.level === 'error') ? 'is-error' : 'is-ok',
+      text: issues.some((issue) => issue.level === 'error')
+        ? `${issues.filter((issue) => issue.level === 'error').length} 项需处理`
+        : '检查通过',
+    });
+    const list = panel.createDiv({ cls: 'wechat-draft-check-list' });
+    for (const issue of issues) {
+      const row = list.createDiv({ cls: `wechat-draft-check-item is-${issue.level}` });
+      const icon = row.createSpan();
+      setIcon(icon, issue.level === 'ok' ? 'circle-check' : issue.level === 'warn' ? 'triangle-alert' : 'circle-alert');
+      const copy = row.createDiv();
+      copy.createEl('strong', { text: issue.title });
+      copy.createSpan({ text: issue.detail });
+    }
+  }
+
+  private publishIssues(snapshot: WeChatSnapshot): Array<{
+    level: 'ok' | 'warn' | 'error';
+    title: string;
+    detail: string;
+  }> {
+    const issues: Array<{
+      level: 'ok' | 'warn' | 'error';
+      title: string;
+      detail: string;
+    }> = [];
+    const draft = this.currentDraftState();
+    const coverAsset = this.chooseCoverAsset(snapshot);
+    const publicationHash = this.publicationHash(snapshot);
+
+    for (const warning of snapshot.warnings) {
+      issues.push({
+        level: warning.blocking ? 'error' : 'warn',
+        title: '图片检查',
+        detail: warning.message,
+      });
+    }
+
+    issues.push(snapshot.title.trim()
+      ? { level: 'ok', title: '标题', detail: snapshot.title.trim() }
+      : { level: 'error', title: '标题缺失', detail: '发布前必须填写文章标题。' });
+
+    issues.push(snapshot.digest.trim()
+      ? { level: snapshot.digest.length > 120 ? 'warn' : 'ok', title: '摘要', detail: snapshot.digest.length > 120 ? '摘要超过 120 字，微信可能截断显示。' : snapshot.digest }
+      : { level: 'warn', title: '摘要为空', detail: '可以发布，但分享卡片吸引力会变弱。' });
+
+    issues.push(coverAsset || this.deps.getSettings().defaultCoverMediaId.trim()
+      ? { level: 'ok', title: '封面', detail: coverAsset ? `将使用 ${coverAsset.fileName}` : '将使用设置页默认封面素材 ID。' }
+      : { level: 'error', title: '封面缺失', detail: '请设置 cover、插入正文图片，或填写默认封面素材 ID。' });
+
+    issues.push(snapshot.assets.length > 0
+      ? { level: 'ok', title: '正文图片', detail: `检测到 ${snapshot.assets.length} 张图片，总计 ${formatBytes(snapshot.assets.reduce((sum, asset) => sum + asset.byteLength, 0))}。` }
+      : { level: 'warn', title: '正文无图片', detail: '可以发布，但文章视觉表现会比较弱。' });
+
+    if (!draft) {
+      issues.push({ level: 'ok', title: '草稿状态', detail: '当前笔记还未关联公众号草稿，将创建新草稿。' });
+    } else if (draft.contentHash === publicationHash) {
+      issues.push({ level: 'ok', title: '草稿状态', detail: `已关联草稿，最近同步于 ${formatDateTime(draft.updatedAt)}。` });
+    } else {
+      issues.push({ level: 'warn', title: '草稿状态', detail: '当前内容或主题有更新，建议点击“更新草稿”。' });
+    }
+
+    if (!this.lastHtmlAudit) {
+      issues.push({
+        level: 'ok',
+        title: 'HTML 兼容性',
+        detail: '发布时会自动移除高风险标签和不兼容属性。',
+      });
+    } else {
+      const htmlErrors = this.lastHtmlAudit.issues.filter((issue) => issue.level === 'error');
+      const htmlWarnings = this.lastHtmlAudit.issues.filter((issue) => issue.level === 'warn');
+      if (htmlErrors.length > 0) {
+        issues.push({
+          level: 'error',
+          title: 'HTML 兼容性',
+          detail: htmlErrors[0].detail,
+        });
+      } else if (htmlWarnings.length > 0) {
+        issues.push({
+          level: 'warn',
+          title: 'HTML 兼容性',
+          detail: `${htmlWarnings.length} 个提示，最终 HTML ${formatBytes(this.lastHtmlAudit.byteLength)}。`,
+        });
+      } else {
+        issues.push({
+          level: 'ok',
+          title: 'HTML 兼容性',
+          detail: `未发现兼容性问题，最终 HTML ${formatBytes(this.lastHtmlAudit.byteLength)}。`,
+        });
+      }
+    }
+
+    return issues;
+  }
+
+  private renderInput(
+    parent: HTMLElement,
+    label: string,
+    value: string,
+    onChange: (value: string) => void,
+  ): void {
+    const row = parent.createEl('label', { cls: 'wechat-draft-meta-row' });
+    row.createSpan({ text: label });
+    const input = row.createEl('input', { attr: { type: 'text' } });
+    input.value = value;
+    input.oninput = () => onChange(input.value);
+  }
+
+  private renderPreview(parent: HTMLElement): void {
+    const body = parent.createDiv({ cls: 'wechat-draft-body' });
+    const canvas = body.createDiv({ cls: 'wechat-draft-canvas' });
+    this.articleEl = canvas.createDiv();
+    void this.updatePreviewOnly();
+  }
+
+  private renderPublishResult(parent: HTMLElement): void {
+    if (!this.publishResult) return;
+    const result = parent.createDiv({ cls: `wechat-draft-result is-${this.publishResult.level}` });
+    const icon = result.createSpan();
+    setIcon(icon, this.publishResult.level === 'ok' ? 'circle-check' : 'circle-alert');
+    const copy = result.createDiv();
+    copy.createEl('strong', { text: this.publishResult.message });
+    if (this.publishResult.detail) copy.createSpan({ text: this.publishResult.detail });
+  }
+
+  private async updatePreviewOnly(): Promise<void> {
+    const snapshot = this.preparedSnapshot();
+    if (!snapshot || !this.articleEl?.isConnected) return;
+    this.renderComponent?.unload();
+    this.renderComponent = new Component();
+    this.renderComponent.load();
+    await renderWeChatArticle(this.app, this.renderComponent, snapshot, this.articleEl, {
+      themeId: this.themeId,
+    });
+  }
+
+  private async copyToClipboard(): Promise<void> {
+    const snapshot = this.preparedSnapshot();
+    if (!snapshot) return;
+    const host = document.body.createDiv();
+    host.style.position = 'fixed';
+    host.style.left = '-10000px';
+    host.style.top = '0';
+    const component = new Component();
+    component.load();
+    try {
+      await renderWeChatArticle(this.app, component, snapshot, host, { themeId: this.themeId });
+      const article = host.querySelector<HTMLElement>('.wechat-draft-article');
+      if (!article) throw new Error('没有可复制的公众号正文。');
+      const sanitized = sanitizeWeChatArticle(article);
+      this.lastHtmlAudit = sanitized;
+      await writeHtmlToClipboard(sanitized.html);
+      new Notice(sanitized.issues.length > 0
+        ? `HTML 已复制，存在 ${sanitized.issues.length} 个兼容性提示。`
+        : '公众号排版 HTML 已复制。');
+      this.render();
+    } catch (error) {
+      new Notice(error instanceof Error ? error.message : '复制失败。');
+    } finally {
+      component.unload();
+      host.remove();
+    }
+  }
+
+  private async savePublishMetadata(): Promise<void> {
+    if (!this.file) return;
+    const title = this.titleValue.trim();
+    const author = this.authorValue.trim();
+    const digest = this.digestValue.trim();
+    const cover = this.coverValue.trim();
+    const contentSourceUrl = this.contentSourceUrlValue.trim();
+    await this.app.fileManager.processFrontMatter(this.file, (frontmatter) => {
+      writeOptionalFrontmatter(frontmatter, 'title', title);
+      writeOptionalFrontmatter(frontmatter, 'author', author);
+      writeOptionalFrontmatter(frontmatter, 'digest', digest);
+      writeOptionalFrontmatter(frontmatter, 'cover', cover);
+      writeOptionalFrontmatter(frontmatter, 'content_source_url', contentSourceUrl);
+    });
+    this.publishResult = { level: 'ok', message: '发布设置已保存。' };
+    await this.reload();
+  }
+
+  private currentDraftState(): WeChatDraftFrontmatter | null {
+    if (!this.file) return null;
+    return readWeChatDraftFrontmatter(
+      this.app.metadataCache.getFileCache(this.file)?.frontmatter,
+    );
+  }
+
+  private statusLabel(): string {
+    const snapshot = this.preparedSnapshot();
+    const draft = this.currentDraftState();
+    if (!snapshot) return '等待预览';
+    if (!draft) return '预览已生成';
+    const publicationHash = this.publicationHash(snapshot);
+    return draft.contentHash === publicationHash ? '草稿已是最新' : '草稿有更新待同步';
+  }
+
+  private publicationHash(snapshot: WeChatSnapshot): string {
+    return `${snapshot.contentHash}:${this.themeId}`;
+  }
+
+  private async publish(asNew: boolean): Promise<void> {
+    if (!this.file) return;
+    const snapshot = this.preparedSnapshot();
+    if (!snapshot) return;
+    if (!snapshot.title.trim()) {
+      new Notice('请先填写文章标题。');
+      return;
+    }
+    const blockingIssue = this.publishIssues(snapshot).find((issue) => issue.level === 'error');
+    if (blockingIssue) {
+      new Notice(`${blockingIssue.title}：${blockingIssue.detail}`);
+      return;
+    }
+    this.operation = '正在准备发布...';
+    this.error = null;
+    this.publishResult = null;
+    this.render();
+    const host = document.body.createDiv();
+    host.style.position = 'fixed';
+    host.style.left = '-10000px';
+    host.style.top = '0';
+    const component = new Component();
+    component.load();
+    try {
+      const imageUrls = await this.uploadContentImages(snapshot);
+      this.operation = '正在生成公众号正文...';
+      this.render();
+      await renderWeChatArticle(this.app, component, snapshot, host, {
+        themeId: this.themeId,
+        imageUrls,
+      });
+      const article = host.querySelector<HTMLElement>('.wechat-draft-article');
+      if (!article) throw new Error('没有可发布的公众号正文。');
+      const sanitized = sanitizeWeChatArticle(article);
+      this.lastHtmlAudit = sanitized;
+      const htmlError = sanitized.issues.find((issue) => issue.level === 'error');
+      if (htmlError) {
+        throw new Error(`${htmlError.title}：${htmlError.detail}`);
+      }
+      const content = sanitized.html;
+      const thumbMediaId = await this.resolveCoverMediaId(snapshot);
+      const payload = {
+        title: snapshot.title,
+        ...(snapshot.author ? { author: snapshot.author } : {}),
+        ...(snapshot.digest ? { digest: snapshot.digest } : {}),
+        ...(snapshot.contentSourceUrl ? { contentSourceUrl: snapshot.contentSourceUrl } : {}),
+        content,
+        thumbMediaId,
+      };
+      const existing = asNew ? null : this.currentDraftState();
+      this.operation = existing ? '正在更新公众号草稿...' : '正在创建公众号草稿...';
+      this.render();
+      const result = existing
+        ? await this.deps.api.updateDraft(existing.draftId, payload)
+        : await this.deps.api.addDraft(payload);
+      const updatedAt = new Date().toISOString();
+      const contentHash = this.publicationHash(snapshot);
+      await this.app.fileManager.processFrontMatter(this.file, (frontmatter) => {
+        writeWeChatDraftFrontmatter(frontmatter, {
+          draftId: result.mediaId,
+          contentHash,
+          themeId: this.themeId,
+          updatedAt,
+          coverMediaId: thumbMediaId,
+        });
+      });
+      const message = existing ? '公众号草稿已更新。' : '已发布到公众号草稿箱。';
+      this.publishResult = {
+        level: 'ok',
+        message,
+        detail: `草稿 ID：${result.mediaId}。正文图片 ${imageUrls.size} 张，封面已就绪。HTML ${formatBytes(sanitized.byteLength)}。`,
+      };
+      new Notice(message);
+      await this.reload();
+    } catch (error) {
+      this.error = error instanceof Error ? error.message : '公众号草稿发布失败。';
+      this.publishResult = {
+        level: 'error',
+        message: '公众号草稿发布失败。',
+        detail: this.error,
+      };
+      new Notice(this.error);
+    } finally {
+      component.unload();
+      host.remove();
+      this.operation = null;
+      this.render();
+    }
+  }
+
+  private async uploadContentImages(snapshot: WeChatSnapshot): Promise<Map<string, string>> {
+    const urls = new Map<string, string>();
+    const assets = snapshot.assets.filter((asset) => snapshot.markdown.includes(asset.originalUrl));
+    for (let index = 0; index < assets.length; index += 1) {
+      const asset = assets[index];
+      const cached = this.deps.findUploadCache('content-image', asset.contentHash);
+      if (cached?.url) {
+        urls.set(asset.contentHash, cached.url);
+        continue;
+      }
+      this.operation = `正在上传正文图片 ${index + 1}/${assets.length}...`;
+      this.render();
+      const url = await this.deps.api.uploadArticleImage(asset);
+      urls.set(asset.contentHash, url);
+      await this.deps.rememberUploadCache({
+        kind: 'content-image',
+        contentHash: asset.contentHash,
+        url,
+        uploadedAt: new Date().toISOString(),
+      });
+    }
+    return urls;
+  }
+
+  private async resolveCoverMediaId(snapshot: WeChatSnapshot): Promise<string> {
+    const settings = this.deps.getSettings();
+    const coverAsset = this.chooseCoverAsset(snapshot);
+    if (!coverAsset) {
+      if (settings.defaultCoverMediaId.trim()) return settings.defaultCoverMediaId.trim();
+      throw new Error('没有可用封面。请设置 cover frontmatter、使用正文图片，或在设置页填写默认封面素材 ID。');
+    }
+    const cached = this.deps.findUploadCache('cover', coverAsset.contentHash);
+    if (cached?.mediaId) return cached.mediaId;
+    this.operation = '正在上传封面素材...';
+    this.render();
+    const mediaId = await this.deps.api.uploadCoverMaterial(coverAsset);
+    await this.deps.rememberUploadCache({
+      kind: 'cover',
+      contentHash: coverAsset.contentHash,
+      mediaId,
+      uploadedAt: new Date().toISOString(),
+    });
+    return mediaId;
+  }
+
+  private chooseCoverAsset(snapshot: WeChatSnapshot): WeChatAsset | null {
+    if (snapshot.coverAssetHash) {
+      const cover = snapshot.assets.find((asset) => asset.contentHash === snapshot.coverAssetHash);
+      if (cover) return cover;
+    }
+    return snapshot.assets[0] ?? null;
+  }
+}
+
+function formatDateTime(value: string): string {
+  const time = Date.parse(value);
+  if (!Number.isFinite(time)) return value || '未知时间';
+  return new Date(time).toLocaleString();
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function writeOptionalFrontmatter(frontmatter: Record<string, unknown>, key: string, value: string): void {
+  if (value) frontmatter[key] = value;
+  else delete frontmatter[key];
+}
+
+async function writeHtmlToClipboard(html: string): Promise<void> {
+  const clipboard = navigator.clipboard;
+  const itemCtor = window.ClipboardItem;
+  if (clipboard?.write && itemCtor) {
+    await clipboard.write([
+      new itemCtor({
+        'text/html': new Blob([html], { type: 'text/html' }),
+        'text/plain': new Blob([html], { type: 'text/plain' }),
+      }),
+    ]);
+    return;
+  }
+  await navigator.clipboard.writeText(html);
+}
