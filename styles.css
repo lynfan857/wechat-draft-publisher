@@ -348,6 +348,19 @@
   overflow-wrap: anywhere;
 }
 
+.wechat-draft-check-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.wechat-draft-check-actions button {
+  min-height: 26px;
+  padding: 2px 8px;
+  font-size: 12px;
+}
+
 .wechat-draft-check-item.is-ok > span:first-child {
   color: #18a058;
 }

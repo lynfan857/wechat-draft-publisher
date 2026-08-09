@@ -300,7 +300,7 @@ export function applySnapshotMetadata(
     : null;
   const prepared: Omit<WeChatSnapshot, 'contentHash'> = {
     ...snapshot,
-    title: values.title.trim() || snapshot.title,
+    title: values.title.trim(),
     author: values.author.trim(),
     digest: values.digest.trim(),
     cover,

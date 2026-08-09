@@ -23,6 +23,19 @@ import type { WeChatApiClient } from './wechatApi';
 
 export const WECHAT_DRAFT_VIEW_TYPE = 'wechat-draft-publisher-preview';
 type CoverMode = 'first-image' | 'image' | 'media-id';
+type PublishCheckLevel = 'ok' | 'warn' | 'error';
+
+interface PublishCheckAction {
+  label: string;
+  run: () => void;
+}
+
+interface PublishCheckIssue {
+  level: PublishCheckLevel;
+  title: string;
+  detail: string;
+  actions?: PublishCheckAction[];
+}
 
 export interface PreviewViewDeps {
   getSettings: () => WeChatDraftPublisherSettings;
@@ -49,6 +62,7 @@ export class WeChatPreviewView extends ItemView {
   private publishResult: { level: 'ok' | 'error'; message: string; detail?: string } | null = null;
   private lastHtmlAudit: SanitizedHtmlResult | null = null;
   private articleEl: HTMLElement | null = null;
+  private checksEl: HTMLElement | null = null;
   private renderComponent: Component | null = null;
 
   constructor(
@@ -321,6 +335,11 @@ export class WeChatPreviewView extends ItemView {
   }
 
   private renderPublishChecks(parent: HTMLElement): void {
+    this.checksEl = parent.createDiv();
+    this.renderPublishChecksContent(this.checksEl);
+  }
+
+  private renderPublishChecksContent(parent: HTMLElement): void {
     const snapshot = this.preparedSnapshot();
     if (!snapshot) return;
     const panel = parent.createDiv({ cls: 'wechat-draft-checks' });
@@ -341,19 +360,25 @@ export class WeChatPreviewView extends ItemView {
       const copy = row.createDiv();
       copy.createEl('strong', { text: issue.title });
       copy.createSpan({ text: issue.detail });
+      if (issue.actions?.length) {
+        const actions = copy.createDiv({ cls: 'wechat-draft-check-actions' });
+        for (const action of issue.actions) {
+          const button = actions.createEl('button', { text: action.label, attr: { type: 'button' } });
+          button.disabled = Boolean(this.operation);
+          button.onclick = () => action.run();
+        }
+      }
     }
   }
 
-  private publishIssues(snapshot: WeChatSnapshot): Array<{
-    level: 'ok' | 'warn' | 'error';
-    title: string;
-    detail: string;
-  }> {
-    const issues: Array<{
-      level: 'ok' | 'warn' | 'error';
-      title: string;
-      detail: string;
-    }> = [];
+  private refreshPublishChecks(): void {
+    if (!this.checksEl?.isConnected) return;
+    this.checksEl.empty();
+    this.renderPublishChecksContent(this.checksEl);
+  }
+
+  private publishIssues(snapshot: WeChatSnapshot): PublishCheckIssue[] {
+    const issues: PublishCheckIssue[] = [];
     const draft = this.currentDraftState();
     const coverAsset = this.chooseCoverAsset(snapshot);
     const coverMediaId = snapshot.coverMediaId.trim() || this.deps.getSettings().defaultCoverMediaId.trim();
@@ -369,11 +394,32 @@ export class WeChatPreviewView extends ItemView {
 
     issues.push(snapshot.title.trim()
       ? { level: 'ok', title: '标题', detail: snapshot.title.trim() }
-      : { level: 'error', title: '标题缺失', detail: '发布前必须填写文章标题。' });
+      : {
+        level: 'error',
+        title: '标题缺失',
+        detail: '发布前必须填写文章标题。',
+        actions: this.suggestTitle()
+          ? [{ label: '使用笔记标题', run: () => this.useSuggestedTitle() }]
+          : undefined,
+      });
 
     issues.push(snapshot.digest.trim()
-      ? { level: snapshot.digest.length > 120 ? 'warn' : 'ok', title: '摘要', detail: snapshot.digest.length > 120 ? '摘要超过 120 字，微信可能截断显示。' : snapshot.digest }
-      : { level: 'warn', title: '摘要为空', detail: '可以发布，但分享卡片吸引力会变弱。' });
+      ? {
+        level: snapshot.digest.length > 120 ? 'warn' : 'ok',
+        title: '摘要',
+        detail: snapshot.digest.length > 120 ? '摘要超过 120 字，微信可能截断显示。' : snapshot.digest,
+        actions: snapshot.digest.length > 120
+          ? [{ label: '截断到 120 字', run: () => this.useTrimmedDigest() }]
+          : undefined,
+      }
+      : {
+        level: 'warn',
+        title: '摘要为空',
+        detail: '可以发布，但分享卡片吸引力会变弱。',
+        actions: this.suggestDigest()
+          ? [{ label: '使用正文首段', run: () => this.useSuggestedDigest() }]
+          : undefined,
+      });
 
     issues.push(coverAsset || coverMediaId
       ? {
@@ -385,7 +431,12 @@ export class WeChatPreviewView extends ItemView {
             ? '将使用当前笔记填写的微信素材 media_id。'
             : '将使用设置页默认封面素材 ID。',
       }
-      : { level: 'error', title: '封面缺失', detail: '请选择正文图片作为封面，或填写微信素材 media_id。' });
+      : {
+        level: 'error',
+        title: '封面缺失',
+        detail: '请选择正文图片作为封面，或填写微信素材 media_id。',
+        actions: this.coverMissingActions(snapshot),
+      });
 
     issues.push(snapshot.assets.length > 0
       ? { level: 'ok', title: '正文图片', detail: `检测到 ${snapshot.assets.length} 张图片，总计 ${formatBytes(snapshot.assets.reduce((sum, asset) => sum + asset.byteLength, 0))}。` }
@@ -396,7 +447,15 @@ export class WeChatPreviewView extends ItemView {
     } else if (draft.contentHash === publicationHash) {
       issues.push({ level: 'ok', title: '草稿状态', detail: `已关联草稿，最近同步于 ${formatDateTime(draft.updatedAt)}。` });
     } else {
-      issues.push({ level: 'warn', title: '草稿状态', detail: '当前内容或主题有更新，建议点击“更新草稿”。' });
+      issues.push({
+        level: 'warn',
+        title: '草稿状态',
+        detail: '当前内容或主题有更新，建议点击“更新草稿”。',
+        actions: [
+          { label: '更新草稿', run: () => void this.publish(false) },
+          { label: '另存为新草稿', run: () => void this.publish(true) },
+        ],
+      });
     }
 
     if (!this.lastHtmlAudit) {
@@ -432,6 +491,81 @@ export class WeChatPreviewView extends ItemView {
     return issues;
   }
 
+  private coverMissingActions(snapshot: WeChatSnapshot): PublishCheckAction[] {
+    const actions: PublishCheckAction[] = [];
+    if (snapshot.assets.length > 0) {
+      actions.push({
+        label: '使用正文第一张图',
+        run: () => {
+          this.coverMode = 'first-image';
+          this.coverValue = '';
+          this.coverMediaIdValue = '';
+          this.render();
+        },
+      });
+      actions.push({
+        label: '选择指定图片',
+        run: () => {
+          this.coverMode = 'image';
+          this.coverValue = snapshot.assets[0]?.originalUrl ?? '';
+          this.coverMediaIdValue = '';
+          this.render();
+        },
+      });
+    }
+    actions.push({
+      label: '填写 media_id',
+      run: () => {
+        this.coverMode = 'media-id';
+        this.coverValue = '';
+        this.render();
+      },
+    });
+    return actions;
+  }
+
+  private suggestTitle(): string {
+    return this.snapshot?.title.trim() || this.file?.basename.trim() || '';
+  }
+
+  private useSuggestedTitle(): void {
+    const title = this.suggestTitle();
+    if (!title) {
+      new Notice('没有找到可用的笔记标题。');
+      return;
+    }
+    this.titleValue = title;
+    this.render();
+  }
+
+  private suggestDigest(): string {
+    const markdown = this.snapshot?.markdown ?? '';
+    const cleaned = markdown
+      .replace(/^#{1,6}\s+.+$/gm, '')
+      .replace(/!\[[^\]]*]\([^)]+\)/g, '')
+      .replace(/!\[\[[^\]]+]]/g, '')
+      .replace(/\[[^\]]+]\([^)]+\)/g, '$1')
+      .split(/\n{2,}/)
+      .map((part) => part.replace(/\s+/g, ' ').trim())
+      .find(Boolean);
+    return cleaned?.slice(0, 120) ?? '';
+  }
+
+  private useSuggestedDigest(): void {
+    const digest = this.suggestDigest();
+    if (!digest) {
+      new Notice('没有找到可用的正文首段。');
+      return;
+    }
+    this.digestValue = digest;
+    this.render();
+  }
+
+  private useTrimmedDigest(): void {
+    this.digestValue = this.digestValue.trim().slice(0, 120);
+    this.render();
+  }
+
   private renderInput(
     parent: HTMLElement,
     label: string,
@@ -442,7 +576,10 @@ export class WeChatPreviewView extends ItemView {
     row.createSpan({ text: label });
     const input = row.createEl('input', { attr: { type: 'text' } });
     input.value = value;
-    input.oninput = () => onChange(input.value);
+    input.oninput = () => {
+      onChange(input.value);
+      this.refreshPublishChecks();
+    };
   }
 
   private renderPreview(parent: HTMLElement): void {
