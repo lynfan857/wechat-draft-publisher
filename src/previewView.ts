@@ -310,11 +310,11 @@ export class WeChatPreviewView extends ItemView {
   }
 
   private coverSummary(snapshot: WeChatSnapshot): string {
-    const coverAsset = this.chooseCoverAsset(snapshot);
     if (this.coverMode === 'media-id') {
       return this.coverMediaIdValue.trim() ? '将使用已有微信素材' : '需要填写 media_id';
     }
     if (this.coverMode === 'image') {
+      const coverAsset = snapshot.assets.find((asset) => asset.originalUrl === this.coverValue.trim());
       return coverAsset ? `将使用 ${coverAsset.fileName}` : '需要选择一张图片';
     }
     return snapshot.assets[0] ? `将使用正文第一张图：${snapshot.assets[0].fileName}` : '正文没有图片，将尝试使用默认封面素材 ID';
