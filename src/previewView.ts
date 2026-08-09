@@ -74,6 +74,7 @@ export class WeChatPreviewView extends ItemView {
   private coverValue = '';
   private coverMediaIdValue = '';
   private coverMode: CoverMode = 'first-image';
+  private coverEditorOpen = false;
   private contentSourceUrlValue = '';
   private themeId = '';
   private loading = false;
@@ -323,6 +324,29 @@ export class WeChatPreviewView extends ItemView {
     head.createEl('h4', { text: '封面' });
     head.createSpan({ text: this.coverSummary(snapshot) });
 
+    const summary = section.createDiv({ cls: 'wechat-draft-cover-summary' });
+    const preview = this.currentCoverAsset(snapshot);
+    if (preview) {
+      summary.createEl('img', { attr: { src: preview.previewUrl, alt: preview.fileName } });
+    } else {
+      const fallback = summary.createDiv({ cls: 'wechat-draft-cover-placeholder' });
+      setIcon(fallback, this.coverMode === 'media-id' ? 'image' : 'image-off');
+    }
+    const copy = summary.createDiv();
+    copy.createEl('strong', { text: this.coverSummaryTitle(snapshot) });
+    copy.createSpan({ text: this.coverSummaryDetail(snapshot) });
+    const change = summary.createEl('button', {
+      text: this.coverEditorOpen ? '收起' : '更换',
+      attr: { type: 'button' },
+    });
+    change.disabled = Boolean(this.operation);
+    change.onclick = () => {
+      this.coverEditorOpen = !this.coverEditorOpen;
+      this.render();
+    };
+
+    if (!this.coverEditorOpen) return;
+
     const modes = section.createDiv({ cls: 'wechat-draft-cover-modes' });
     this.renderCoverMode(modes, 'first-image', '使用正文第一张图', '适合大多数文章，发布时会上传为微信永久素材。');
     this.renderCoverMode(modes, 'image', '使用指定图片', '从当前笔记检测到的图片里选择一张。');
@@ -395,6 +419,34 @@ export class WeChatPreviewView extends ItemView {
       return coverAsset ? `将使用 ${coverAsset.fileName}` : '需要选择一张图片';
     }
     return snapshot.assets[0] ? `将使用正文第一张图：${snapshot.assets[0].fileName}` : '正文没有图片，将尝试使用默认封面素材 ID';
+  }
+
+  private currentCoverAsset(snapshot: WeChatSnapshot): WeChatAsset | null {
+    if (this.coverMode === 'media-id') return null;
+    if (this.coverMode === 'image') {
+      return snapshot.assets.find((asset) => asset.originalUrl === this.coverValue.trim()) ?? null;
+    }
+    return snapshot.assets[0] ?? null;
+  }
+
+  private coverSummaryTitle(snapshot: WeChatSnapshot): string {
+    const asset = this.currentCoverAsset(snapshot);
+    if (asset) return asset.fileName;
+    if (this.coverMode === 'media-id') return this.coverMediaIdValue.trim() ? '微信素材 media_id' : '未填写 media_id';
+    return '未选择封面图片';
+  }
+
+  private coverSummaryDetail(snapshot: WeChatSnapshot): string {
+    const asset = this.currentCoverAsset(snapshot);
+    if (asset) return `${formatBytes(asset.byteLength)} · 发布时会上传为封面素材`;
+    if (this.coverMode === 'media-id') {
+      return this.coverMediaIdValue.trim()
+        ? '发布时会使用已上传素材，不再上传封面图片'
+        : '填写公众号后台已有图片素材的 media_id';
+    }
+    return this.deps.getSettings().defaultCoverMediaId.trim()
+      ? '当前笔记没有图片，将使用设置页默认封面素材 ID'
+      : '发布前需要选择图片或填写 media_id';
   }
 
   private renderPublishChecks(parent: HTMLElement): void {
