@@ -339,6 +339,19 @@
   overflow-wrap: anywhere;
 }
 
+.wechat-draft-result-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.wechat-draft-result-actions button {
+  min-height: 26px;
+  padding: 2px 8px;
+  font-size: 12px;
+}
+
 .wechat-draft-checks-head {
   display: flex;
   align-items: center;

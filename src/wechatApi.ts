@@ -199,6 +199,15 @@ function formatWechatError(code: number, message: string | undefined, fallback: 
   }
   if (code === 40013) return `${fallback}：AppID 无效。`;
   if (code === 40125 || code === 40001) return `${fallback}：AppSecret 或 access_token 无效。`;
+  if (code === 42001 || code === 40014) return `${fallback}：access_token 已过期或无效，请重试。`;
+  if (code === 48001) return `${fallback}：公众号未开通或未授权该接口。请确认账号类型和接口权限。`;
+  if (code === 45009) return `${fallback}：微信接口调用次数已达到上限，请稍后再试。`;
+  if (code === 45008) return `${fallback}：图文消息数量超过限制。`;
+  if (code === 45166) return `${fallback}：图片素材格式或大小不符合微信要求。`;
+  if (code === 40007 || code === 40009) return `${fallback}：media_id 无效或素材不存在。`;
+  if (code === 40003) return `${fallback}：OpenID 无效，当前操作不应需要 OpenID，请检查微信返回信息。`;
+  if (code === 40132) return `${fallback}：图片链接不合法，请重新上传图片后再试。`;
+  if (code === 89503 || code === 89501) return `${fallback}：公众号接口 IP 白名单校验失败，请检查当前公网 IP。`;
   return `${fallback}：${message || `微信错误码 ${code}`}`;
 }
 

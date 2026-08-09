@@ -19,7 +19,7 @@ import type {
   WeChatDraftFrontmatter,
   WeChatSnapshot,
 } from './types';
-import type { WeChatApiClient } from './wechatApi';
+import { WeChatApiError, type WeChatApiClient } from './wechatApi';
 
 export const WECHAT_DRAFT_VIEW_TYPE = 'wechat-draft-publisher-preview';
 type CoverMode = 'first-image' | 'image' | 'media-id';
@@ -51,6 +51,12 @@ interface HtmlAuditState {
   result: SanitizedHtmlResult;
 }
 
+interface PublishLogEntry {
+  time: string;
+  step: string;
+  detail?: string;
+}
+
 export interface PreviewViewDeps {
   getSettings: () => WeChatDraftPublisherSettings;
   saveSettings: () => Promise<void>;
@@ -75,6 +81,7 @@ export class WeChatPreviewView extends ItemView {
   private error: string | null = null;
   private publishResult: { level: 'ok' | 'error'; message: string; detail?: string } | null = null;
   private lastHtmlAudit: HtmlAuditState | null = null;
+  private publishLog: PublishLogEntry[] = [];
   private articleEl: HTMLElement | null = null;
   private checksEl: HTMLElement | null = null;
   private renderComponent: Component | null = null;
@@ -637,6 +644,11 @@ export class WeChatPreviewView extends ItemView {
     const copy = result.createDiv();
     copy.createEl('strong', { text: this.publishResult.message });
     if (this.publishResult.detail) copy.createSpan({ text: this.publishResult.detail });
+    if (this.publishLog.length > 0) {
+      const actions = copy.createDiv({ cls: 'wechat-draft-result-actions' });
+      const diagnostics = actions.createEl('button', { text: '复制诊断信息', attr: { type: 'button' } });
+      diagnostics.onclick = () => void this.copyPublishDiagnostics();
+    }
   }
 
   private async updatePreviewOnly(): Promise<void> {
@@ -650,9 +662,59 @@ export class WeChatPreviewView extends ItemView {
     });
   }
 
+  private resetPublishLog(step: string, detail?: string): void {
+    this.publishLog = [];
+    this.addPublishLog(step, detail);
+  }
+
+  private addPublishLog(step: string, detail?: string): void {
+    this.publishLog.push({
+      time: new Date().toISOString(),
+      step,
+      detail,
+    });
+  }
+
+  private async copyPublishDiagnostics(): Promise<void> {
+    const snapshot = this.preparedSnapshot();
+    await navigator.clipboard.writeText(JSON.stringify({
+      sourcePath: this.file?.path,
+      title: snapshot?.title,
+      themeId: this.themeId,
+      draftId: this.currentDraftState()?.draftId,
+      publishResult: this.publishResult,
+      imageCount: snapshot?.assets.length ?? 0,
+      assetCacheCount: this.deps.getSettings().assetCache.length,
+      log: this.publishLog,
+    }, null, 2));
+    new Notice('诊断信息已复制。');
+  }
+
+  private async retryOperation<T>(
+    label: string,
+    run: () => Promise<T>,
+    maxAttempts = 2,
+  ): Promise<T> {
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        if (attempt > 1) this.addPublishLog(`${label} 重试`, `第 ${attempt}/${maxAttempts} 次`);
+        return await run();
+      } catch (error) {
+        lastError = error;
+        const message = errorMessage(error);
+        this.addPublishLog(`${label} 失败`, `第 ${attempt}/${maxAttempts} 次：${message}`);
+        if (error instanceof WeChatApiError && error.code) break;
+        if (attempt < maxAttempts) await sleep(700 * attempt);
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error(`${label} 失败。`);
+  }
+
   private async copyToClipboard(): Promise<void> {
     const snapshot = this.preparedSnapshot();
     if (!snapshot) return;
+    this.resetPublishLog('开始复制全文', snapshot.sourcePath);
     this.operation = '正在准备复制...';
     this.error = null;
     this.publishResult = null;
@@ -665,6 +727,7 @@ export class WeChatPreviewView extends ItemView {
     component.load();
     try {
       const imageUrls = await this.uploadContentImages(snapshot);
+      this.addPublishLog('正文图片处理完成', `${imageUrls.size}/${snapshot.assets.filter((asset) => snapshot.markdown.includes(asset.originalUrl)).length} 张`);
       this.operation = '正在复制全文...';
       this.render();
       await renderWeChatArticle(this.app, component, snapshot, host, {
@@ -680,6 +743,7 @@ export class WeChatPreviewView extends ItemView {
         result: sanitized,
       };
       await writeHtmlToClipboard(sanitized.html);
+      this.addPublishLog('HTML 已复制到剪贴板', formatBytes(sanitized.byteLength));
       const message = sanitized.issues.length > 0
         ? `全文已复制，存在 ${sanitized.issues.length} 个兼容性提示。`
         : '全文已复制，图片已处理。';
@@ -691,6 +755,7 @@ export class WeChatPreviewView extends ItemView {
       new Notice(message);
     } catch (error) {
       const detail = error instanceof Error ? error.message : '复制失败。';
+      this.addPublishLog('复制失败', detail);
       this.publishResult = {
         level: 'error',
         message: '复制失败。',
@@ -822,6 +887,7 @@ export class WeChatPreviewView extends ItemView {
       new Notice(`${blockingIssue.title}：${blockingIssue.detail}`);
       return;
     }
+    this.resetPublishLog(asNew ? '开始另存为新草稿' : '开始发布草稿', snapshot.sourcePath);
     this.operation = '正在准备发布...';
     this.error = null;
     this.publishResult = null;
@@ -834,6 +900,7 @@ export class WeChatPreviewView extends ItemView {
     component.load();
     try {
       const imageUrls = await this.uploadContentImages(snapshot);
+      this.addPublishLog('正文图片处理完成', `${imageUrls.size}/${snapshot.assets.filter((asset) => snapshot.markdown.includes(asset.originalUrl)).length} 张`);
       this.operation = '正在生成公众号正文...';
       this.render();
       await renderWeChatArticle(this.app, component, snapshot, host, {
@@ -843,6 +910,7 @@ export class WeChatPreviewView extends ItemView {
       const article = host.querySelector<HTMLElement>('.wechat-draft-article');
       if (!article) throw new Error('没有可发布的公众号正文。');
       const sanitized = sanitizeWeChatArticle(article);
+      this.addPublishLog('HTML 已生成', formatBytes(sanitized.byteLength));
       const contentHash = this.publicationHash(snapshot);
       this.lastHtmlAudit = {
         source: 'publish',
@@ -855,6 +923,7 @@ export class WeChatPreviewView extends ItemView {
       }
       const content = sanitized.html;
       const thumbMediaId = await this.resolveCoverMediaId(snapshot);
+      this.addPublishLog('封面素材就绪', thumbMediaId);
       const payload = {
         title: snapshot.title,
         ...(snapshot.author ? { author: snapshot.author } : {}),
@@ -866,9 +935,11 @@ export class WeChatPreviewView extends ItemView {
       const existing = asNew ? null : this.currentDraftState();
       this.operation = existing ? '正在更新公众号草稿...' : '正在创建公众号草稿...';
       this.render();
+      this.addPublishLog(existing ? '请求更新草稿' : '请求创建草稿', existing?.draftId);
       const result = existing
         ? await this.deps.api.updateDraft(existing.draftId, payload)
         : await this.deps.api.addDraft(payload);
+      this.addPublishLog('微信草稿接口成功', result.mediaId);
       const updatedAt = new Date().toISOString();
       await this.app.fileManager.processFrontMatter(this.file, (frontmatter) => {
         writeWeChatDraftFrontmatter(frontmatter, {
@@ -889,6 +960,7 @@ export class WeChatPreviewView extends ItemView {
       await this.reload();
     } catch (error) {
       const detail = error instanceof Error ? error.message : '公众号草稿发布失败。';
+      this.addPublishLog('发布失败', detail);
       this.publishResult = {
         level: 'error',
         message: '公众号草稿发布失败。',
@@ -910,12 +982,21 @@ export class WeChatPreviewView extends ItemView {
       const asset = assets[index];
       const cached = this.deps.findUploadCache('content-image', asset.contentHash);
       if (cached?.url) {
+        this.addPublishLog('正文图片缓存命中', `${asset.fileName} -> ${cached.url}`);
         urls.set(asset.contentHash, cached.url);
         continue;
       }
       this.operation = `正在上传正文图片 ${index + 1}/${assets.length}...`;
       this.render();
-      const url = await this.deps.api.uploadArticleImage(asset);
+      this.addPublishLog('开始上传正文图片', `${index + 1}/${assets.length} ${asset.fileName} ${formatBytes(asset.byteLength)}`);
+      const url = await this.retryOperation(
+        `上传正文图片 ${asset.fileName}`,
+        () => this.deps.api.uploadArticleImage(asset),
+        3,
+      ).catch((error) => {
+        throw new Error(`正文图片上传失败：${asset.fileName}。${errorMessage(error)}`);
+      });
+      this.addPublishLog('正文图片上传成功', `${asset.fileName} -> ${url}`);
       urls.set(asset.contentHash, url);
       await this.deps.rememberUploadCache({
         kind: 'content-image',
@@ -932,14 +1013,28 @@ export class WeChatPreviewView extends ItemView {
     if (snapshot.coverMediaId.trim()) return snapshot.coverMediaId.trim();
     const coverAsset = this.chooseCoverAsset(snapshot);
     if (!coverAsset) {
-      if (settings.defaultCoverMediaId.trim()) return settings.defaultCoverMediaId.trim();
+      if (settings.defaultCoverMediaId.trim()) {
+        this.addPublishLog('使用默认封面素材 ID', settings.defaultCoverMediaId.trim());
+        return settings.defaultCoverMediaId.trim();
+      }
       throw new Error('没有可用封面。请设置 cover frontmatter、使用正文图片，或在设置页填写默认封面素材 ID。');
     }
     const cached = this.deps.findUploadCache('cover', coverAsset.contentHash);
-    if (cached?.mediaId) return cached.mediaId;
+    if (cached?.mediaId) {
+      this.addPublishLog('封面素材缓存命中', `${coverAsset.fileName} -> ${cached.mediaId}`);
+      return cached.mediaId;
+    }
     this.operation = '正在上传封面素材...';
     this.render();
-    const mediaId = await this.deps.api.uploadCoverMaterial(coverAsset);
+    this.addPublishLog('开始上传封面素材', `${coverAsset.fileName} ${formatBytes(coverAsset.byteLength)}`);
+    const mediaId = await this.retryOperation(
+      `上传封面素材 ${coverAsset.fileName}`,
+      () => this.deps.api.uploadCoverMaterial(coverAsset),
+      3,
+    ).catch((error) => {
+      throw new Error(`封面素材上传失败：${coverAsset.fileName}。${errorMessage(error)}`);
+    });
+    this.addPublishLog('封面素材上传成功', `${coverAsset.fileName} -> ${mediaId}`);
     await this.deps.rememberUploadCache({
       kind: 'cover',
       contentHash: coverAsset.contentHash,
@@ -969,6 +1064,16 @@ function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error || '未知错误');
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
 }
 
 function writeOptionalFrontmatter(frontmatter: Record<string, unknown>, key: string, value: string): void {
