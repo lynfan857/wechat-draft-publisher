@@ -226,7 +226,7 @@ export class WeChatPreviewView extends ItemView {
     publishNew.disabled = Boolean(this.operation);
     publishNew.onclick = () => void this.publish(true);
 
-    const copy = toolbar.createEl('button', { text: '复制', attr: { type: 'button' } });
+    const copy = toolbar.createEl('button', { text: '复制全文', attr: { type: 'button' } });
     copy.disabled = Boolean(this.operation);
     copy.onclick = () => void this.copyToClipboard();
 
@@ -482,6 +482,10 @@ export class WeChatPreviewView extends ItemView {
       });
     }
 
+    const copyAudit = this.lastHtmlAudit?.source === 'copy'
+      && this.lastHtmlAudit.publicationHash === publicationHash
+      ? this.lastHtmlAudit.result
+      : null;
     const publishAudit = this.lastHtmlAudit?.source === 'publish'
       && this.lastHtmlAudit.publicationHash === publicationHash
       ? this.lastHtmlAudit.result
@@ -514,6 +518,14 @@ export class WeChatPreviewView extends ItemView {
           detail: `未发现兼容性问题，最终 HTML ${formatBytes(publishAudit.byteLength)}。`,
         });
       }
+    }
+
+    if (copyAudit?.issues.length) {
+      issues.push({
+        level: 'warn',
+        title: '复制全文',
+        detail: `上次复制产生 ${copyAudit.issues.length} 个兼容性提示；不影响发布草稿。`,
+      });
     }
 
     return issues;
@@ -641,6 +653,10 @@ export class WeChatPreviewView extends ItemView {
   private async copyToClipboard(): Promise<void> {
     const snapshot = this.preparedSnapshot();
     if (!snapshot) return;
+    this.operation = '正在准备复制...';
+    this.error = null;
+    this.publishResult = null;
+    this.render();
     const host = document.body.createDiv();
     host.style.position = 'fixed';
     host.style.left = '-10000px';
@@ -648,7 +664,13 @@ export class WeChatPreviewView extends ItemView {
     const component = new Component();
     component.load();
     try {
-      await renderWeChatArticle(this.app, component, snapshot, host, { themeId: this.themeId });
+      const imageUrls = await this.uploadContentImages(snapshot);
+      this.operation = '正在复制全文...';
+      this.render();
+      await renderWeChatArticle(this.app, component, snapshot, host, {
+        themeId: this.themeId,
+        imageUrls,
+      });
       const article = host.querySelector<HTMLElement>('.wechat-draft-article');
       if (!article) throw new Error('没有可复制的公众号正文。');
       const sanitized = sanitizeWeChatArticle(article);
@@ -658,15 +680,28 @@ export class WeChatPreviewView extends ItemView {
         result: sanitized,
       };
       await writeHtmlToClipboard(sanitized.html);
-      new Notice(sanitized.issues.length > 0
-        ? `HTML 已复制，存在 ${sanitized.issues.length} 个兼容性提示。`
-        : '公众号排版 HTML 已复制。');
-      this.render();
+      const message = sanitized.issues.length > 0
+        ? `全文已复制，存在 ${sanitized.issues.length} 个兼容性提示。`
+        : '全文已复制，图片已处理。';
+      this.publishResult = {
+        level: 'ok',
+        message: '全文已复制。',
+        detail: `正文图片 ${imageUrls.size} 张，HTML ${formatBytes(sanitized.byteLength)}。`,
+      };
+      new Notice(message);
     } catch (error) {
-      new Notice(error instanceof Error ? error.message : '复制失败。');
+      const detail = error instanceof Error ? error.message : '复制失败。';
+      this.publishResult = {
+        level: 'error',
+        message: '复制失败。',
+        detail,
+      };
+      new Notice(detail);
     } finally {
       component.unload();
       host.remove();
+      this.operation = null;
+      this.render();
     }
   }
 

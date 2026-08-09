@@ -8,6 +8,12 @@ export interface RenderOptions {
   imageUrls?: Map<string, string>;
 }
 
+export type SanitizeImageMode = 'wechat-publish' | 'local-preview';
+
+export interface SanitizeOptions {
+  imageMode?: SanitizeImageMode;
+}
+
 export interface HtmlAuditIssue {
   level: 'warn' | 'error';
   title: string;
@@ -308,9 +314,13 @@ function markdownWithImageUrls(snapshot: WeChatSnapshot, imageUrls?: Map<string,
   return markdown;
 }
 
-export function sanitizeWeChatArticle(root: HTMLElement): SanitizedHtmlResult {
+export function sanitizeWeChatArticle(
+  root: HTMLElement,
+  options: SanitizeOptions = {},
+): SanitizedHtmlResult {
   const clone = root.cloneNode(true) as HTMLElement;
   const issues: HtmlAuditIssue[] = [];
+  const imageMode = options.imageMode ?? 'wechat-publish';
 
   for (const unsafe of Array.from(
     clone.querySelectorAll('script,style,iframe,object,embed,form,button,input,textarea,select'),
@@ -325,7 +335,7 @@ export function sanitizeWeChatArticle(root: HTMLElement): SanitizedHtmlResult {
 
   const elements = [clone, ...Array.from(clone.querySelectorAll<HTMLElement>('*'))];
   for (const element of elements) {
-    normalizeElementForWeChat(element, issues);
+    normalizeElementForWeChat(element, issues, imageMode);
   }
 
   for (const pre of Array.from(clone.querySelectorAll<HTMLElement>('pre'))) {
@@ -359,7 +369,11 @@ export function serializeWeChatArticle(root: HTMLElement): string {
   return sanitizeWeChatArticle(root).html;
 }
 
-function normalizeElementForWeChat(element: HTMLElement, issues: HtmlAuditIssue[]): void {
+function normalizeElementForWeChat(
+  element: HTMLElement,
+  issues: HtmlAuditIssue[],
+  imageMode: SanitizeImageMode,
+): void {
   const tag = element.tagName.toLowerCase();
   if (!ALLOWED_TAGS.has(tag)) {
     issues.push({
@@ -373,7 +387,7 @@ function normalizeElementForWeChat(element: HTMLElement, issues: HtmlAuditIssue[
       replacement.setAttribute(attribute.name, attribute.value);
     }
     element.replaceWith(replacement);
-    normalizeElementForWeChat(replacement, issues);
+    normalizeElementForWeChat(replacement, issues, imageMode);
     return;
   }
 
@@ -407,7 +421,16 @@ function normalizeElementForWeChat(element: HTMLElement, issues: HtmlAuditIssue[
 
   if (element instanceof HTMLImageElement) {
     const src = element.getAttribute('src') ?? '';
-    if (!/^https?:\/\//i.test(src)) {
+    if (/^https?:\/\//i.test(src)) return;
+    if (imageMode === 'local-preview' && /^(app:|file:|obsidian:)/i.test(src)) {
+      issues.push({
+        level: 'warn',
+        title: '本地图片链接',
+        detail: '复制的是本地预览 HTML，图片不能直接在微信里访问。',
+      });
+      return;
+    }
+    {
       issues.push({
         level: 'error',
         title: '图片尚未上传',
