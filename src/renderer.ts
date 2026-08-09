@@ -407,7 +407,7 @@ function normalizeElementForWeChat(element: HTMLElement, issues: HtmlAuditIssue[
 
   if (element instanceof HTMLImageElement) {
     const src = element.getAttribute('src') ?? '';
-    if (!/^https:\/\//i.test(src)) {
+    if (!/^https?:\/\//i.test(src)) {
       issues.push({
         level: 'error',
         title: '图片尚未上传',

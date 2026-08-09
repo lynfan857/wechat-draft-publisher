@@ -24,6 +24,7 @@ import type { WeChatApiClient } from './wechatApi';
 export const WECHAT_DRAFT_VIEW_TYPE = 'wechat-draft-publisher-preview';
 type CoverMode = 'first-image' | 'image' | 'media-id';
 type PublishCheckLevel = 'ok' | 'warn' | 'error';
+type WorkbenchStatusLevel = 'idle' | 'ok' | 'warn' | 'error' | 'busy';
 
 interface PublishCheckAction {
   label: string;
@@ -35,6 +36,19 @@ interface PublishCheckIssue {
   title: string;
   detail: string;
   actions?: PublishCheckAction[];
+}
+
+interface WorkbenchStatus {
+  level: WorkbenchStatusLevel;
+  icon: string;
+  label: string;
+  detail: string;
+}
+
+interface HtmlAuditState {
+  source: 'copy' | 'publish';
+  publicationHash: string;
+  result: SanitizedHtmlResult;
 }
 
 export interface PreviewViewDeps {
@@ -60,7 +74,7 @@ export class WeChatPreviewView extends ItemView {
   private operation: string | null = null;
   private error: string | null = null;
   private publishResult: { level: 'ok' | 'error'; message: string; detail?: string } | null = null;
-  private lastHtmlAudit: SanitizedHtmlResult | null = null;
+  private lastHtmlAudit: HtmlAuditState | null = null;
   private articleEl: HTMLElement | null = null;
   private checksEl: HTMLElement | null = null;
   private renderComponent: Component | null = null;
@@ -183,6 +197,14 @@ export class WeChatPreviewView extends ItemView {
     const brand = header.createDiv({ cls: 'wechat-draft-brand' });
     brand.createEl('h2', { text: '公众号发布' });
     brand.createSpan({ text: this.file ? this.file.path : '未选择笔记' });
+
+    const status = this.workbenchStatus();
+    const statusEl = header.createDiv({ cls: `wechat-draft-header-status is-${status.level}` });
+    const icon = statusEl.createSpan();
+    setIcon(icon, status.icon);
+    const copy = statusEl.createDiv();
+    copy.createEl('strong', { text: status.label });
+    copy.createSpan({ text: status.detail });
   }
 
   private renderToolbar(parent: HTMLElement): void {
@@ -191,12 +213,13 @@ export class WeChatPreviewView extends ItemView {
     refresh.disabled = Boolean(this.operation);
     refresh.onclick = () => void this.reload();
 
+    const primaryAction = this.primaryPublishAction();
     const publish = toolbar.createEl('button', {
       cls: 'mod-cta',
-      text: this.currentDraftState() ? '更新草稿' : '发布草稿',
+      text: primaryAction.label,
       attr: { type: 'button' },
     });
-    publish.disabled = Boolean(this.operation);
+    publish.disabled = Boolean(this.operation) || primaryAction.disabled;
     publish.onclick = () => void this.publish(false);
 
     const publishNew = toolbar.createEl('button', { text: '另存为新草稿', attr: { type: 'button' } });
@@ -219,10 +242,11 @@ export class WeChatPreviewView extends ItemView {
       this.render();
     };
 
-    const state = toolbar.createDiv({ cls: `wechat-draft-state${this.operation ? '' : ' is-ready'}` });
+    const status = this.workbenchStatus();
+    const state = toolbar.createDiv({ cls: `wechat-draft-state is-${status.level}` });
     const icon = state.createSpan();
-    setIcon(icon, this.operation ? 'loader-circle' : 'circle-check');
-    state.createSpan({ text: this.operation ?? this.statusLabel() });
+    setIcon(icon, status.icon);
+    state.createSpan({ text: status.label });
   }
 
   private renderMetadataEditor(parent: HTMLElement): void {
@@ -233,7 +257,7 @@ export class WeChatPreviewView extends ItemView {
     save.disabled = Boolean(this.operation);
     save.onclick = () => void this.savePublishMetadata();
 
-    const meta = parent.createDiv({ cls: 'wechat-draft-meta' });
+    const meta = section.createDiv({ cls: 'wechat-draft-meta' });
     this.renderInput(meta, '标题', this.titleValue, (value) => {
       this.titleValue = value;
       void this.updatePreviewOnly();
@@ -249,7 +273,7 @@ export class WeChatPreviewView extends ItemView {
     this.renderInput(meta, '原文链接', this.contentSourceUrlValue, (value) => {
       this.contentSourceUrlValue = value;
     });
-    this.renderCoverPicker(parent);
+    this.renderCoverPicker(section);
   }
 
   private renderCoverPicker(parent: HTMLElement): void {
@@ -458,15 +482,19 @@ export class WeChatPreviewView extends ItemView {
       });
     }
 
-    if (!this.lastHtmlAudit) {
+    const publishAudit = this.lastHtmlAudit?.source === 'publish'
+      && this.lastHtmlAudit.publicationHash === publicationHash
+      ? this.lastHtmlAudit.result
+      : null;
+    if (!publishAudit) {
       issues.push({
         level: 'ok',
         title: 'HTML 兼容性',
-        detail: '发布时会自动移除高风险标签和不兼容属性。',
+        detail: '发布时会上传图片并自动移除高风险标签和不兼容属性。',
       });
     } else {
-      const htmlErrors = this.lastHtmlAudit.issues.filter((issue) => issue.level === 'error');
-      const htmlWarnings = this.lastHtmlAudit.issues.filter((issue) => issue.level === 'warn');
+      const htmlErrors = publishAudit.issues.filter((issue) => issue.level === 'error');
+      const htmlWarnings = publishAudit.issues.filter((issue) => issue.level === 'warn');
       if (htmlErrors.length > 0) {
         issues.push({
           level: 'error',
@@ -477,13 +505,13 @@ export class WeChatPreviewView extends ItemView {
         issues.push({
           level: 'warn',
           title: 'HTML 兼容性',
-          detail: `${htmlWarnings.length} 个提示，最终 HTML ${formatBytes(this.lastHtmlAudit.byteLength)}。`,
+          detail: `${htmlWarnings.length} 个提示，最终 HTML ${formatBytes(publishAudit.byteLength)}。`,
         });
       } else {
         issues.push({
           level: 'ok',
           title: 'HTML 兼容性',
-          detail: `未发现兼容性问题，最终 HTML ${formatBytes(this.lastHtmlAudit.byteLength)}。`,
+          detail: `未发现兼容性问题，最终 HTML ${formatBytes(publishAudit.byteLength)}。`,
         });
       }
     }
@@ -624,7 +652,11 @@ export class WeChatPreviewView extends ItemView {
       const article = host.querySelector<HTMLElement>('.wechat-draft-article');
       if (!article) throw new Error('没有可复制的公众号正文。');
       const sanitized = sanitizeWeChatArticle(article);
-      this.lastHtmlAudit = sanitized;
+      this.lastHtmlAudit = {
+        source: 'copy',
+        publicationHash: this.publicationHash(snapshot),
+        result: sanitized,
+      };
       await writeHtmlToClipboard(sanitized.html);
       new Notice(sanitized.issues.length > 0
         ? `HTML 已复制，存在 ${sanitized.issues.length} 个兼容性提示。`
@@ -665,13 +697,77 @@ export class WeChatPreviewView extends ItemView {
     );
   }
 
-  private statusLabel(): string {
+  private primaryPublishAction(): { label: string; disabled: boolean } {
     const snapshot = this.preparedSnapshot();
     const draft = this.currentDraftState();
-    if (!snapshot) return '等待预览';
-    if (!draft) return '预览已生成';
+    if (!snapshot) return { label: '发布到草稿箱', disabled: true };
+    if (!draft) return { label: '发布到草稿箱', disabled: false };
+    return draft.contentHash === this.publicationHash(snapshot)
+      ? { label: '草稿已是最新', disabled: true }
+      : { label: '更新草稿', disabled: false };
+  }
+
+  private workbenchStatus(): WorkbenchStatus {
+    if (this.operation) {
+      return {
+        level: 'busy',
+        icon: 'loader-circle',
+        label: this.operation,
+        detail: '正在处理发布任务，请保持 Obsidian 打开。',
+      };
+    }
+    if (this.loading) {
+      return {
+        level: 'busy',
+        icon: 'loader-circle',
+        label: '正在生成预览',
+        detail: '解析当前笔记、图片和发布属性。',
+      };
+    }
+    if (this.error) {
+      return {
+        level: 'error',
+        icon: 'circle-alert',
+        label: '预览失败',
+        detail: this.error,
+      };
+    }
+    const snapshot = this.preparedSnapshot();
+    const draft = this.currentDraftState();
+    if (!snapshot) {
+      return {
+        level: 'idle',
+        icon: 'file-text',
+        label: '等待预览',
+        detail: '打开一篇 Markdown 笔记后开始。',
+      };
+    }
+    if (!draft) {
+      return {
+        level: 'idle',
+        icon: 'circle-dot',
+        label: '尚未发布',
+        detail: '将创建新的公众号草稿。',
+      };
+    }
     const publicationHash = this.publicationHash(snapshot);
-    return draft.contentHash === publicationHash ? '草稿已是最新' : '草稿有更新待同步';
+    return draft.contentHash === publicationHash
+      ? {
+        level: 'ok',
+        icon: 'circle-check',
+        label: '草稿已是最新',
+        detail: `最近同步 ${formatDateTime(draft.updatedAt)}。`,
+      }
+      : {
+        level: 'warn',
+        icon: 'triangle-alert',
+        label: '有更新待同步',
+        detail: '当前内容或主题已变化。',
+      };
+  }
+
+  private statusLabel(): string {
+    return this.workbenchStatus().label;
   }
 
   private publicationHash(snapshot: WeChatSnapshot): string {
@@ -712,7 +808,12 @@ export class WeChatPreviewView extends ItemView {
       const article = host.querySelector<HTMLElement>('.wechat-draft-article');
       if (!article) throw new Error('没有可发布的公众号正文。');
       const sanitized = sanitizeWeChatArticle(article);
-      this.lastHtmlAudit = sanitized;
+      const contentHash = this.publicationHash(snapshot);
+      this.lastHtmlAudit = {
+        source: 'publish',
+        publicationHash: contentHash,
+        result: sanitized,
+      };
       const htmlError = sanitized.issues.find((issue) => issue.level === 'error');
       if (htmlError) {
         throw new Error(`${htmlError.title}：${htmlError.detail}`);
@@ -734,7 +835,6 @@ export class WeChatPreviewView extends ItemView {
         ? await this.deps.api.updateDraft(existing.draftId, payload)
         : await this.deps.api.addDraft(payload);
       const updatedAt = new Date().toISOString();
-      const contentHash = this.publicationHash(snapshot);
       await this.app.fileManager.processFrontMatter(this.file, (frontmatter) => {
         writeWeChatDraftFrontmatter(frontmatter, {
           draftId: result.mediaId,
@@ -753,13 +853,13 @@ export class WeChatPreviewView extends ItemView {
       new Notice(message);
       await this.reload();
     } catch (error) {
-      this.error = error instanceof Error ? error.message : '公众号草稿发布失败。';
+      const detail = error instanceof Error ? error.message : '公众号草稿发布失败。';
       this.publishResult = {
         level: 'error',
         message: '公众号草稿发布失败。',
-        detail: this.error,
+        detail,
       };
-      new Notice(this.error);
+      new Notice(detail);
     } finally {
       component.unload();
       host.remove();
