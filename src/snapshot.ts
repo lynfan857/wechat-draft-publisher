@@ -294,14 +294,19 @@ export function applySnapshotMetadata(
   snapshot: WeChatSnapshot,
   values: Pick<WeChatSnapshot, 'title' | 'author' | 'digest' | 'cover' | 'coverMediaId' | 'contentSourceUrl'>,
 ): WeChatSnapshot {
+  const cover = values.cover.trim();
+  const coverAsset = cover
+    ? snapshot.assets.find((asset) => asset.originalUrl === cover)
+    : null;
   const prepared: Omit<WeChatSnapshot, 'contentHash'> = {
     ...snapshot,
     title: values.title.trim() || snapshot.title,
     author: values.author.trim(),
     digest: values.digest.trim(),
-    cover: values.cover.trim(),
+    cover,
     coverMediaId: values.coverMediaId.trim(),
     contentSourceUrl: values.contentSourceUrl.trim(),
+    coverAssetHash: coverAsset?.contentHash ?? '',
   };
   return {
     ...prepared,
