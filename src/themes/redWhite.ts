@@ -4,6 +4,7 @@ export const redWhiteTheme: WeChatTheme = {
   id: 'red-white',
   label: '红白',
   color: '#d92d20',
+  description: '醒目正式，适合活动通知、重点公告',
   palette: {
     accent: '#d92d20',
     accentDark: '#9f1f18',

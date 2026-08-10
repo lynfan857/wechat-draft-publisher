@@ -81,6 +81,7 @@ export interface WeChatTheme {
   label: string;
   color: string;
   palette: ThemePalette;
+  description: string;
 }
 
 export interface ThemePalette {

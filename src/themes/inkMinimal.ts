@@ -4,6 +4,7 @@ export const inkMinimalTheme: WeChatTheme = {
   id: 'ink-minimal',
   label: '墨白',
   color: '#374151',
+  description: '极简克制，适合思考笔记、观点随笔',
   palette: {
     accent: '#374151',
     accentDark: '#111827',

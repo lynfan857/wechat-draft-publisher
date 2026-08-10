@@ -87,6 +87,7 @@ export class WeChatPreviewView extends ItemView {
   private articleEl: HTMLElement | null = null;
   private checksEl: HTMLElement | null = null;
   private renderComponent: Component | null = null;
+  private documentClickHandler: ((e: MouseEvent) => void) | null = null;
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -239,17 +240,69 @@ export class WeChatPreviewView extends ItemView {
     copy.disabled = Boolean(this.operation);
     copy.onclick = () => void this.copyToClipboard();
 
-    const themeSelect = toolbar.createEl('select', { attr: { 'aria-label': '选择公众号主题' } });
+    const currentTheme = getTheme(this.themeId);
+    const themeSelect = toolbar.createDiv({ cls: 'wechat-draft-theme-select' });
+    const trigger = themeSelect.createEl('button', {
+      cls: 'wechat-draft-theme-trigger',
+      attr: { type: 'button', 'aria-label': '选择公众号主题', 'aria-haspopup': 'listbox' },
+    });
+    const triggerLabel = trigger.createSpan({ cls: 'wechat-draft-theme-trigger-label' });
+    triggerLabel.createSpan({ cls: 'wechat-draft-theme-swatch', attr: { style: `--swatch: ${currentTheme.color}` } });
+    triggerLabel.createSpan({ text: currentTheme.label });
+    trigger.createSpan({ cls: 'wechat-draft-theme-caret', text: '▾' });
+
+    const panel = themeSelect.createDiv({ cls: 'wechat-draft-theme-panel', attr: { role: 'listbox' } });
+    panel.style.display = 'none';
     for (const theme of WECHAT_THEMES) {
-      const option = themeSelect.createEl('option', { text: `主题 · ${theme.label}`, value: theme.id });
-      option.selected = theme.id === this.themeId;
+      const item = panel.createDiv({
+        cls: `wechat-draft-theme-item${theme.id === this.themeId ? ' is-selected' : ''}`,
+        attr: { role: 'option', 'data-theme-id': theme.id, tabindex: '0' },
+      });
+      item.createSpan({ cls: 'wechat-draft-theme-swatch', attr: { style: `--swatch: ${theme.color}` } });
+      const textWrap = item.createDiv({ cls: 'wechat-draft-theme-item-text' });
+      textWrap.createDiv({ cls: 'wechat-draft-theme-item-name', text: theme.label });
+      textWrap.createDiv({ cls: 'wechat-draft-theme-item-desc', text: theme.description });
+      item.createSpan({ cls: 'wechat-draft-theme-check', text: '✓' });
+
+      const pick = () => {
+        this.themeId = theme.id;
+        this.deps.getSettings().defaultThemeId = this.themeId;
+        void this.deps.saveSettings().then(() => this.render());
+      };
+      item.onclick = pick;
+      item.onkeydown = (event: KeyboardEvent) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          pick();
+        }
+      };
     }
-    themeSelect.onchange = async () => {
-      this.themeId = themeSelect.value;
-      this.deps.getSettings().defaultThemeId = this.themeId;
-      await this.deps.saveSettings();
-      this.render();
+
+    const setPanelOpen = (open: boolean) => {
+      panel.style.display = open ? 'block' : 'none';
+      themeSelect.classList.toggle('is-open', open);
+      trigger.setAttribute('aria-expanded', String(open));
+      if (!open && this.documentClickHandler) {
+        document.removeEventListener('click', this.documentClickHandler);
+        this.documentClickHandler = null;
+      }
     };
+    trigger.onclick = (event: MouseEvent) => {
+      event.stopPropagation();
+      const open = panel.style.display === 'none';
+      setPanelOpen(open);
+      if (open) {
+        // 点击面板外部时关闭；使用自清理监听，避免重渲染导致累积。
+        const handler = (e: MouseEvent) => {
+          if (!themeSelect.contains(e.target as Node)) {
+            setPanelOpen(false);
+          }
+        };
+        this.documentClickHandler = handler;
+        document.addEventListener('click', handler);
+      }
+    };
+    themeSelect.onclick = (event: MouseEvent) => event.stopPropagation();
 
     const settings = toolbar.createEl('button', { text: this.settingsDrawerOpen ? '收起设置' : '发布设置', attr: { type: 'button' } });
     settings.onclick = () => {

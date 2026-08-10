@@ -4,6 +4,7 @@ export const cangheGreenTheme: WeChatTheme = {
   id: 'canghe-green',
   label: '苍绿',
   color: '#18a058',
+  description: '适合阅读随笔、生活与人文类长文',
   palette: {
     accent: '#18a058',
     accentDark: '#087f45',

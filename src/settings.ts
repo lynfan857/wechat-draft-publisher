@@ -1,7 +1,7 @@
 import { App, Notice, PluginSettingTab, Setting } from 'obsidian';
 
 import type WeChatDraftPublisherPlugin from './main';
-import { WECHAT_THEMES } from './themes';
+import { getTheme, WECHAT_THEMES } from './themes';
 
 export const APP_SECRET_KEY = 'wechat-draft-publisher-app-secret';
 
@@ -166,16 +166,17 @@ export class WeChatDraftPublisherSettingTab extends PluginSettingTab {
 
     new Setting(section)
       .setName('默认主题')
-      .setDesc('打开预览时默认使用的公众号排版主题。')
+      .setDesc(`打开预览时默认使用的公众号排版主题。${getTheme(this.plugin.settings.defaultThemeId).description}`)
       .addDropdown((dropdown) => {
         for (const theme of WECHAT_THEMES) {
-          dropdown.addOption(theme.id, theme.label);
+          dropdown.addOption(theme.id, `${theme.label} — ${theme.description}`);
         }
         dropdown
           .setValue(this.plugin.settings.defaultThemeId)
           .onChange(async (value) => {
             this.plugin.settings.defaultThemeId = value;
             await this.plugin.saveSettings();
+            this.display();
           });
       });
 
