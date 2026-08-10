@@ -89,6 +89,7 @@ export class WeChatPreviewView extends ItemView {
   private renderComponent: Component | null = null;
   private documentClickHandler: ((e: MouseEvent) => void) | null = null;
   private okChecksOpen = false;
+  private liveUpdateTimer: number | null = null;
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -122,6 +123,12 @@ export class WeChatPreviewView extends ItemView {
       if (active instanceof TFile && active.extension === 'md') {
         void this.setFile(active);
       }
+    }));
+    // 实时预览：当前 md 被编辑（含 frontmatter）时，防抖后原地重画正文，保持滚动位置。
+    this.registerEvent(this.app.vault.on('modify', (file) => {
+      if (!(file instanceof TFile) || file.extension !== 'md') return;
+      if (this.file?.path !== file.path) return;
+      this.scheduleLiveUpdate();
     }));
     await this.setFile(this.app.workspace.getActiveFile());
   }
@@ -824,6 +831,16 @@ export class WeChatPreviewView extends ItemView {
       const diagnostics = actions.createEl('button', { text: '复制诊断信息', attr: { type: 'button' } });
       diagnostics.onclick = () => void this.copyPublishDiagnostics();
     }
+  }
+
+  private scheduleLiveUpdate(): void {
+    if (this.liveUpdateTimer !== null) {
+      window.clearTimeout(this.liveUpdateTimer);
+    }
+    this.liveUpdateTimer = window.setTimeout(() => {
+      this.liveUpdateTimer = null;
+      void this.updatePreviewOnly();
+    }, 350);
   }
 
   private async updatePreviewOnly(): Promise<void> {
