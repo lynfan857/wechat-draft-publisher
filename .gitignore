@@ -3,4 +3,5 @@ main.js
 _release/
 _preview/
 _inspect/
+.workbuddy/
 .DS_Store
