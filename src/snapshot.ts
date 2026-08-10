@@ -1,6 +1,6 @@
 import { createHash } from 'crypto';
 import path from 'path';
-import { App, requestUrl, TFile } from 'obsidian';
+import { App, parseYaml, requestUrl, TFile } from 'obsidian';
 
 import type {
   NotePublishMetadata,
@@ -44,6 +44,22 @@ function stripFrontmatter(markdown: string): string {
   if (end < 0) return markdown;
   const after = markdown.indexOf('\n', end + 4);
   return after < 0 ? '' : markdown.slice(after + 1);
+}
+
+function parseFrontmatterFromMarkdown(markdown: string): Record<string, unknown> | undefined {
+  if (!markdown.startsWith('---')) return undefined;
+  const end = markdown.indexOf('\n---', 3);
+  if (end < 0) return undefined;
+  const source = markdown.slice(3, end).trim();
+  if (!source) return undefined;
+  try {
+    const parsed = parseYaml(source);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function firstMarkdownHeading(markdown: string): string {
@@ -263,8 +279,18 @@ export async function buildSnapshot(
   settings: WeChatDraftPublisherSettings,
 ): Promise<WeChatSnapshot> {
   const raw = await app.vault.cachedRead(file);
+  return buildSnapshotFromMarkdown(app, file, settings, raw);
+}
+
+export async function buildSnapshotFromMarkdown(
+  app: App,
+  file: TFile,
+  settings: WeChatDraftPublisherSettings,
+  raw: string,
+): Promise<WeChatSnapshot> {
   const markdown = stripFrontmatter(raw).trim();
-  const frontmatter = app.metadataCache.getFileCache(file)?.frontmatter;
+  const frontmatter = parseFrontmatterFromMarkdown(raw)
+    ?? app.metadataCache.getFileCache(file)?.frontmatter;
   const metadata = metadataFromFrontmatter(frontmatter);
   const warnings: WeChatPublishWarning[] = [];
   const assets = await collectAssets(app, file, markdown, metadata.cover, warnings);

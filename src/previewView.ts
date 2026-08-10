@@ -10,7 +10,7 @@ import {
 import { readWeChatDraftFrontmatter, writeWeChatDraftFrontmatter } from './frontmatter';
 import { renderWeChatArticle, sanitizeWeChatArticle } from './renderer';
 import type { SanitizedHtmlResult } from './renderer';
-import { buildSnapshot, applySnapshotMetadata } from './snapshot';
+import { buildSnapshot, buildSnapshotFromMarkdown, applySnapshotMetadata } from './snapshot';
 import { getTheme, WECHAT_THEMES } from './themes';
 import type {
   UploadedAssetCache,
@@ -90,6 +90,7 @@ export class WeChatPreviewView extends ItemView {
   private documentClickHandler: ((e: MouseEvent) => void) | null = null;
   private okChecksOpen = false;
   private liveUpdateTimer: number | null = null;
+  private liveUpdateMarkdown: string | null = null;
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -124,7 +125,14 @@ export class WeChatPreviewView extends ItemView {
         void this.setFile(active);
       }
     }));
-    // 实时预览：当前 md 被编辑（含 frontmatter）时，防抖后原地重画正文，保持滚动位置。
+    // 实时预览（主触发）：编辑器每次按键都触发 editor-change，能精准拿到正在编辑的文件。
+    this.registerEvent(this.app.workspace.on('editor-change', (editor, info) => {
+      const file = info?.file;
+      if (!file || file.extension !== 'md') return;
+      if (this.file?.path !== file.path) return;
+      this.scheduleLiveUpdate(editor.getValue());
+    }));
+    // 兜底：文件被外部/其他方式修改（非编辑器）时也能刷新。
     this.registerEvent(this.app.vault.on('modify', (file) => {
       if (!(file instanceof TFile) || file.extension !== 'md') return;
       if (this.file?.path !== file.path) return;
@@ -833,14 +841,34 @@ export class WeChatPreviewView extends ItemView {
     }
   }
 
-  private scheduleLiveUpdate(): void {
+  private scheduleLiveUpdate(markdown?: string): void {
+    if (markdown !== undefined) {
+      this.liveUpdateMarkdown = markdown;
+    }
     if (this.liveUpdateTimer !== null) {
       window.clearTimeout(this.liveUpdateTimer);
     }
     this.liveUpdateTimer = window.setTimeout(() => {
       this.liveUpdateTimer = null;
-      void this.updatePreviewOnly();
+      const latestMarkdown = this.liveUpdateMarkdown;
+      this.liveUpdateMarkdown = null;
+      void this.liveUpdate(latestMarkdown ?? undefined);
     }, 350);
+  }
+
+  // 实时预览：先重建快照（优先使用编辑器内存文本），再原地重画正文，保留滚动位置。
+  private async liveUpdate(markdown?: string): Promise<void> {
+    if (!this.file) return;
+    try {
+      const snapshot = markdown !== undefined
+        ? await buildSnapshotFromMarkdown(this.app, this.file, this.deps.getSettings(), markdown)
+        : await buildSnapshot(this.app, this.file, this.deps.getSettings());
+      this.snapshot = snapshot;
+    } catch {
+      // 读取失败时静默跳过（如文件正被外部写入），等下次编辑再尝试。
+      return;
+    }
+    await this.updatePreviewOnly();
   }
 
   private async updatePreviewOnly(): Promise<void> {
