@@ -86,6 +86,109 @@ function normalizeLinks(root: HTMLElement): void {
   }
 }
 
+function hasMeaningfulListItemContent(element: HTMLElement): boolean {
+  const text = (element.textContent ?? '').replace(/\s+/g, '');
+  return Boolean(text) || Boolean(element.querySelector('img,table,pre,code,ul,ol'));
+}
+
+function previousSiblingHasContent(node: ChildNode): boolean {
+  let current = node.previousSibling;
+  while (current) {
+    if (current.nodeType === Node.TEXT_NODE && (current.textContent ?? '').trim()) return true;
+    if (current.nodeType === Node.ELEMENT_NODE) return true;
+    current = current.previousSibling;
+  }
+  return false;
+}
+
+function normalizeListMarkup(root: HTMLElement): void {
+  for (const item of Array.from(root.querySelectorAll<HTMLElement>('li'))) {
+    for (const child of Array.from(item.childNodes)) {
+      if (child.nodeType === Node.TEXT_NODE && !(child.textContent ?? '').trim()) {
+        child.remove();
+      }
+    }
+
+    for (const child of Array.from(item.children)) {
+      const tag = child.tagName.toLowerCase();
+      if (!['p', 'div', 'section'].includes(tag)) continue;
+
+      const needsBreak = previousSiblingHasContent(child);
+      if (needsBreak) child.before(document.createElement('br'));
+      while (child.firstChild) {
+        child.before(child.firstChild);
+      }
+      child.remove();
+    }
+
+    if (!hasMeaningfulListItemContent(item)) {
+      item.remove();
+    }
+  }
+
+  for (const list of Array.from(root.querySelectorAll<HTMLElement>('ul,ol'))) {
+    if (!list.querySelector('li')) list.remove();
+  }
+}
+
+function appendListItemContent(target: HTMLElement, source: HTMLElement): void {
+  let hasContent = false;
+  for (const child of Array.from(source.childNodes)) {
+    if (child.nodeType === Node.TEXT_NODE && !(child.textContent ?? '').trim()) continue;
+
+    if (child.nodeType === Node.ELEMENT_NODE) {
+      const tag = (child as HTMLElement).tagName.toLowerCase();
+      if (['p', 'div', 'section'].includes(tag)) {
+        if (hasContent) target.appendChild(document.createElement('br'));
+        while (child.firstChild) {
+          target.appendChild(child.firstChild);
+          hasContent = true;
+        }
+        continue;
+      }
+    }
+
+    target.appendChild(child);
+    hasContent = true;
+  }
+}
+
+function replaceListsWithParagraphs(root: HTMLElement): void {
+  const lists = Array.from(root.querySelectorAll<HTMLElement>('ul,ol')).reverse();
+  for (const list of lists) {
+    const ordered = list.tagName.toLowerCase() === 'ol';
+    const replacements: HTMLElement[] = [];
+    let index = 1;
+
+    for (const item of Array.from(list.children)) {
+      if (item.tagName.toLowerCase() !== 'li') continue;
+      const li = item as HTMLElement;
+      if (!hasMeaningfulListItemContent(li)) continue;
+
+      const paragraph = document.createElement('p');
+      const marker = document.createElement('span');
+      marker.setText(ordered ? `${index}. ` : '• ');
+      paragraph.appendChild(marker);
+      appendListItemContent(paragraph, li);
+      setStyles(paragraph, {
+        margin: '12px 0',
+        paddingLeft: '1em',
+        color: 'inherit',
+        fontSize: '16px',
+        lineHeight: '1.9',
+        textIndent: '-1em',
+      });
+      setStyles(marker, {
+        color: 'inherit',
+      });
+      replacements.push(paragraph);
+      index += 1;
+    }
+
+    list.replaceWith(...replacements);
+  }
+}
+
 function decorateCodeBlock(pre: HTMLElement, palette: ThemePalette): void {
   const code = pre.querySelector<HTMLElement>('code');
   setStyles(pre, {
@@ -139,6 +242,7 @@ function applyWechatTheme(root: HTMLElement, theme: WeChatTheme): void {
   const { palette } = theme;
   stripUnsafeNodes(root);
   normalizeLinks(root);
+  normalizeListMarkup(root);
 
   setStyles(root, {
     display: 'block',
@@ -253,6 +357,7 @@ function applyWechatTheme(root: HTMLElement, theme: WeChatTheme): void {
   for (const table of Array.from(root.querySelectorAll<HTMLTableElement>('table'))) {
     decorateTable(table, palette);
   }
+  replaceListsWithParagraphs(root);
 }
 
 function renderHeader(snapshot: WeChatSnapshot, theme: WeChatTheme): HTMLElement {
@@ -332,6 +437,9 @@ export function sanitizeWeChatArticle(
     });
     unsafe.remove();
   }
+
+  normalizeListMarkup(clone);
+  replaceListsWithParagraphs(clone);
 
   const elements = [clone, ...Array.from(clone.querySelectorAll<HTMLElement>('*'))];
   for (const element of elements) {
