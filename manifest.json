@@ -1,7 +1,7 @@
 {
   "id": "wechat-draft-publisher",
   "name": "WeChat Draft Publisher",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "minAppVersion": "1.8.0",
   "description": "Preview, format, copy, and publish Markdown notes to WeChat Official Account drafts.",
   "author": "Kobe",

@@ -1,6 +1,6 @@
 {
   "name": "obsidian-wechat-draft-publisher",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Preview and publish Obsidian notes as WeChat Official Account drafts.",
   "type": "module",
   "main": "main.js",
