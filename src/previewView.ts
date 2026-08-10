@@ -88,6 +88,7 @@ export class WeChatPreviewView extends ItemView {
   private checksEl: HTMLElement | null = null;
   private renderComponent: Component | null = null;
   private documentClickHandler: ((e: MouseEvent) => void) | null = null;
+  private okChecksOpen = false;
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -514,29 +515,66 @@ export class WeChatPreviewView extends ItemView {
     const head = panel.createDiv({ cls: 'wechat-draft-checks-head' });
     head.createEl('h3', { text: '发布检查' });
     const issues = this.publishIssues(snapshot);
+    const errorCount = issues.filter((issue) => issue.level === 'error').length;
     head.createSpan({
-      cls: issues.some((issue) => issue.level === 'error') ? 'is-error' : 'is-ok',
-      text: issues.some((issue) => issue.level === 'error')
-        ? `${issues.filter((issue) => issue.level === 'error').length} 项需处理`
-        : '检查通过',
+      cls: errorCount > 0 ? 'is-error' : 'is-ok',
+      text: errorCount > 0 ? `${errorCount} 项需处理` : '检查通过',
     });
-    const list = panel.createDiv({ cls: 'wechat-draft-check-list' });
-    for (const issue of issues) {
-      const row = list.createDiv({ cls: `wechat-draft-check-item is-${issue.level}` });
-      const icon = row.createSpan();
-      setIcon(icon, issue.level === 'ok' ? 'circle-check' : issue.level === 'warn' ? 'triangle-alert' : 'circle-alert');
-      const copy = row.createDiv();
-      copy.createEl('strong', { text: issue.title });
-      copy.createSpan({ text: issue.detail });
-      if (issue.actions?.length) {
-        const actions = copy.createDiv({ cls: 'wechat-draft-check-actions' });
-        for (const action of issue.actions) {
-          const button = actions.createEl('button', { text: action.label, attr: { type: 'button' } });
-          button.disabled = Boolean(this.operation);
-          button.onclick = () => action.run();
-        }
+
+    const blockers = issues.filter((issue) => issue.level !== 'ok');
+    const passed = issues.filter((issue) => issue.level === 'ok');
+
+    if (blockers.length > 0) {
+      const list = panel.createDiv({ cls: 'wechat-draft-check-list' });
+      for (const issue of blockers) {
+        this.renderCheckItem(list, issue);
       }
     }
+
+    if (passed.length > 0) {
+      this.renderOkSummary(panel, passed);
+    }
+  }
+
+  private renderCheckItem(parent: HTMLElement, issue: PublishCheckIssue): void {
+    const row = parent.createDiv({ cls: `wechat-draft-check-item is-${issue.level}` });
+    const icon = row.createSpan();
+    setIcon(icon, issue.level === 'ok' ? 'circle-check' : issue.level === 'warn' ? 'triangle-alert' : 'circle-alert');
+    const copy = row.createDiv();
+    copy.createEl('strong', { text: issue.title });
+    copy.createSpan({ text: issue.detail });
+    if (issue.actions?.length) {
+      const actions = copy.createDiv({ cls: 'wechat-draft-check-actions' });
+      for (const action of issue.actions) {
+        const button = actions.createEl('button', { text: action.label, attr: { type: 'button' } });
+        button.disabled = Boolean(this.operation);
+        button.onclick = () => action.run();
+      }
+    }
+  }
+
+  private renderOkSummary(parent: HTMLElement, passed: PublishCheckIssue[]): void {
+    const summary = parent.createDiv({ cls: 'wechat-draft-checks-ok' });
+    const toggle = summary.createEl('button', {
+      cls: 'wechat-draft-checks-ok-toggle',
+      attr: { type: 'button', 'aria-expanded': String(this.okChecksOpen) },
+    });
+    const icon = toggle.createSpan();
+    setIcon(icon, this.okChecksOpen ? 'chevron-down' : 'chevron-right');
+    toggle.createSpan({ text: `✓ ${passed.length} 项检查通过` });
+
+    const detail = summary.createDiv({ cls: 'wechat-draft-checks-ok-detail' });
+    detail.style.display = this.okChecksOpen ? 'grid' : 'none';
+    for (const issue of passed) {
+      this.renderCheckItem(detail, issue);
+    }
+
+    toggle.onclick = () => {
+      this.okChecksOpen = !this.okChecksOpen;
+      toggle.setAttribute('aria-expanded', String(this.okChecksOpen));
+      setIcon(icon, this.okChecksOpen ? 'chevron-down' : 'chevron-right');
+      detail.style.display = this.okChecksOpen ? 'grid' : 'none';
+    };
   }
 
   private refreshPublishChecks(): void {
